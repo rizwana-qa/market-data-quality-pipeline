@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="__CSP__">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bitcoin vs. Ethereum | 30-Day Market Analysis Dashboard</title>
+<style>
+:root{--navy:#0b2545;--text:#1f2937;--muted:#5b6472;--line:#e3e7ee;--soft:#f6f8fb;--btc:#2a78d6;--eth:#eb6834;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:#ffffff;color:var(--text);font-family:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;line-height:1.5}
+.top{padding:24px 24px 14px;max-width:1180px;margin:0 auto;border-bottom:1px solid var(--line)}
+h1{margin:0;color:var(--navy);font-size:28px;letter-spacing:-0.3px}
+[hidden]{display:none!important}
+.provenance{border-top:1px solid var(--line);padding-top:14px;margin-top:6px}
+.provenance dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 18px;margin:8px 0;font-size:13px}
+.provenance dl div{display:contents}
+.provenance dt{color:var(--muted)}
+.provenance dd{margin:0;word-break:break-word}
+.provenance p{margin:6px 0 0;color:var(--muted);font-size:13px}
+h2{margin:0 0 4px;color:var(--navy);font-size:17px}
+.subtitle{margin:2px 0 10px;color:var(--navy);font-size:18px;font-weight:600}
+main{max-width:1180px;margin:0 auto;padding:8px 24px 24px}
+.controls{display:flex;flex-wrap:wrap;gap:14px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line);margin-bottom:10px}
+.group{display:flex;gap:6px;align-items:center}
+.label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-right:4px}
+button{font:inherit;font-size:14px;background:#fff;color:var(--navy);border:1px solid #c9d1de;border-radius:8px;padding:6px 14px;cursor:pointer}
+button:hover:not(:disabled){background:var(--soft)}
+button:disabled{color:#9aa3b2;cursor:not-allowed;background:var(--soft)}
+button[aria-pressed="true"]{background:var(--navy);color:#fff;border-color:var(--navy)}
+button:focus-visible{outline:3px solid #9cc2f5;outline-offset:2px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
+.dot.btc{background:var(--btc)}.dot.eth{background:var(--eth)}
+button[data-asset][aria-pressed="false"]{opacity:.65}
+.export{margin-left:auto;border-color:var(--navy)}
+.period-text{margin:6px 0 12px;color:var(--muted);font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px}
+.hint,.note{margin:0 0 6px;color:var(--muted);font-size:13px}
+.insights ul{margin:6px 0 4px;padding-left:20px}
+.insights li{margin:4px 0;font-size:15px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-bottom:14px}
+.kpi{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--soft)}
+.kpi .k-label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.kpi .k-value{font-size:20px;font-weight:600;color:var(--navy);margin:4px 0;word-break:break-word}
+.kpi .k-note{font-size:12.5px;color:var(--muted)}
+.chart{width:100%;min-height:330px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:13px;white-space:nowrap}
+th,td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:right}
+th{background:var(--soft);color:var(--navy);position:sticky;top:0}
+th:first-child,td:first-child{text-align:left;position:sticky;left:0;background:#fff}
+th:first-child{background:var(--soft)}
+.pager{display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:10px;font-size:14px;color:var(--muted)}
+footer{border-top:1px solid var(--line);background:#ffffff;padding:18px 24px;text-align:center;color:var(--muted);font-size:13px}
+footer .who{color:var(--navy);font-weight:600;font-size:15px}
+footer p{margin:3px 0}
+@media (max-width:820px){.two{grid-template-columns:1fr}.export{margin-left:0}h1{font-size:24px}.provenance dl{grid-template-columns:1fr;gap:0}.provenance dd{margin-bottom:6px}}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Bitcoin vs. Ethereum</h1>
+  <p class="subtitle">30-Day Market Analysis Dashboard</p>
+</header>
+<main>
+  <section class="controls" aria-label="Dashboard controls">
+    <div class="group" role="group" aria-label="Period">
+      <span class="label">Period</span>
+      <button type="button" data-window="7" aria-pressed="false">7 days</button>
+      <button type="button" data-window="14" aria-pressed="false">14 days</button>
+      <button type="button" data-window="30" aria-pressed="true">30 days</button>
+    </div>
+    <div class="group" role="group" aria-label="Assets">
+      <span class="label">Assets</span>
+      <button type="button" data-asset="BTC" aria-pressed="true"><span class="dot btc"></span>BTC</button>
+      <button type="button" data-asset="ETH" aria-pressed="true"><span class="dot eth"></span>ETH</button>
+    </div>
+    <button type="button" id="export-csv" class="export">Export CSV (selected period)</button>
+  </section>
+  <p class="period-text" id="period-text"></p>
+  <section class="card insights" aria-label="Key insights">
+    <h2>Key insights</h2>
+    <ul id="insights"></ul>
+    <p class="note" id="window-note"></p>
+  </section>
+  <section class="kpis" id="kpis" aria-label="Key figures"></section>
+  <section class="card">
+    <h2>Closing prices, first close = 100</h2>
+    <p class="hint">Both assets start at 100 so that their paths can be compared; hover for the actual USD closing price.</p>
+    <div class="chart" id="chart-price"></div>
+  </section>
+  <section class="card">
+    <h2>Daily returns</h2>
+    <p class="hint">Daily simple return in percent: close divided by the previous close, minus 1.</p>
+    <div class="chart" id="chart-returns"></div>
+  </section>
+  <div class="two">
+    <section class="card">
+      <h2>Return relationship</h2>
+      <p class="hint">Each point is one day: Bitcoin return on the horizontal axis, Ethereum return on the vertical axis.</p>
+      <div class="chart" id="chart-scatter"></div>
+    </section>
+    <section class="card">
+      <h2>Drawdown from running peak</h2>
+      <p class="hint">How far each close is below the highest close so far in the selected period.</p>
+      <div class="chart" id="chart-drawdown"></div>
+    </section>
+  </div>
+  <section class="card">
+    <h2>Daily data</h2>
+    <p class="hint" id="table-caption"></p>
+    <div class="table-wrap"><table id="data-table"><thead></thead><tbody></tbody></table></div>
+    <div class="pager">
+      <button type="button" id="page-prev">Previous</button>
+      <span id="page-status"></span>
+      <button type="button" id="page-next">Next</button>
+    </div>
+  </section>
+  <section class="provenance" id="provenance" aria-labelledby="provenance-title">
+    <h2 id="provenance-title">Data provenance and methodology</h2>
+    <dl>
+      <div id="prov-row-source"><dt>Data source</dt><dd id="prov-source"></dd></div>
+      <div id="prov-row-closes"><dt>Closing-price period</dt><dd id="prov-closes"></dd></div>
+      <div id="prov-row-returns"><dt>Daily-return period</dt><dd id="prov-returns"></dd></div>
+      <div id="prov-row-fetched"><dt>Data fetched</dt><dd id="prov-fetched"></dd></div>
+      <div id="prov-row-generated"><dt>Dashboard generated</dt><dd id="prov-generated"></dd></div>
+      <div id="prov-row-input"><dt>Input dataset</dt><dd id="prov-input"></dd></div>
+      <div id="prov-row-endpoint"><dt>API endpoint</dt><dd id="prov-endpoint"></dd></div>
+      <div id="prov-row-pairs"><dt>Pairs</dt><dd id="prov-pairs"></dd></div>
+    </dl>
+    <p>Method: each daily return is the close divided by the previous close, minus 1, using Kraken's daily candles (one per UTC day). Metrics follow the project's analysis definitions.</p>
+    <p>Limitations: 30 observations from one exchange in USD form a short sample that may not be representative, and a correlation does not establish causation. The source details above are as recorded in the project's report; this dashboard does not re-verify them against Kraken.</p>
+    <p>An independent educational project, not affiliated with Kraken.</p>
+  </section>
+</main>
+<footer>
+  <p class="who">Created by Rizwana Zahoor</p>
+  <p>Bitcoin vs. Ethereum | 30-Day Market Analysis</p>
+  <p>Educational purposes only. Not financial advice.</p>
+</footer>
+<script id="dashboard-data" type="application/json">__DATA_JSON__</script>
+<script id="plotly-js">__PLOTLY_JS__</script>
+<script>
+/* LOGIC-START */
+const DashboardLogic = (function () {
+  const COLORS = { BTC: "#2a78d6", ETH: "#eb6834" };
+  const ASSETS = ["BTC", "ETH"];
+  const FONT = { family: "Segoe UI, system-ui, Arial, sans-serif", color: "#1f2937", size: 13 };
+
+  function windowKeys(payload) { return Object.keys(payload.windows).map(Number).sort((a, b) => a - b); }
+  function windowOf(payload, k) {
+    if (!Number.isInteger(k) || !(String(k) in payload.windows)) throw new Error("unknown window: " + k);
+    return payload.windows[String(k)];
+  }
+  function selectRows(payload, k) { windowOf(payload, k); return payload.rows.slice(payload.rows.length - (k + 1)); }
+  function exportCsv(payload, k) {
+    const lines = [payload.columns.join(",")].concat(selectRows(payload, k).map(function (row) { return row.join(","); }));
+    return lines.join("\n") + "\n";
+  }
+  function exportFileName(payload, k) { windowOf(payload, k); return payload.meta.csv_file.replace(/\.csv$/, "") + "_last" + k + "days.csv"; }
+  function paginate(rows, page, size) {
+    const pages = Math.max(1, Math.ceil(rows.length / size));
+    const current = Math.min(pages, Math.max(1, Math.floor(Number(page)) || 1));
+    const start = (current - 1) * size;
+    return { rows: rows.slice(start, start + size), page: current, pages: pages, total: rows.length, first: rows.length ? start + 1 : 0, last: Math.min(rows.length, start + size) };
+  }
+  function displayCell(raw) { return raw === "" ? "–" : raw; }
+  function initialVisibility() { return { BTC: true, ETH: true }; }
+  function toggleAsset(visible, asset) {
+    if (ASSETS.indexOf(asset) < 0) throw new Error("unknown asset: " + asset);
+    const next = { BTC: visible.BTC, ETH: visible.ETH };
+    const other = asset === "BTC" ? "ETH" : "BTC";
+    if (next[asset] && !next[other]) return next;
+    next[asset] = !next[asset];
+    return next;
+  }
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function parseIsoDate(text) {
+    const m = typeof text === "string" ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(text) : null;
+    if (!m) throw new Error("not an ISO date: " + text);
+    const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]), check = new Date(Date.UTC(y, mo - 1, d));
+    if (mo < 1 || mo > 12 || check.getUTCFullYear() !== y || check.getUTCMonth() !== mo - 1 || check.getUTCDate() !== d) throw new Error("not a calendar date: " + text);
+    return { y: y, mo: mo, d: d };
+  }
+  function formatPeriod(start, end) {
+    const a = parseIsoDate(start), b = parseIsoDate(end);
+    return a.d + " " + MONTHS[a.mo - 1] + (a.y === b.y ? "" : " " + a.y) + "–" + b.d + " " + MONTHS[b.mo - 1] + " " + b.y;
+  }
+  function reportingPeriods(meta) {
+    return { closes: formatPeriod(meta.close_period.start, meta.close_period.end), returns: formatPeriod(meta.return_period.start, meta.return_period.end) };
+  }
+  function joinList(items) { return items.length <= 2 ? items.join(" and ") : items.slice(0, -1).join(", ") + " and " + items[items.length - 1]; }
+  function sourceName(meta) {
+    return meta.endpoint ? "Kraken public OHLC API" : "Data source not confirmed by the report";
+  }
+  function provenanceItems(meta) {
+    const periods = reportingPeriods(meta), items = [
+      { id: "source", label: "Data source", value: sourceName(meta) },
+      { id: "closes", label: "Closing-price period", value: periods.closes },
+      { id: "returns", label: "Daily-return period", value: periods.returns }
+    ];
+    if (meta.data_fetched) items.push({ id: "fetched", label: "Data fetched", value: meta.data_fetched });
+    if (meta.generated_at) items.push({ id: "generated", label: "Dashboard generated", value: meta.generated_at });
+    if (meta.csv_file) items.push({ id: "input", label: "Input dataset", value: meta.csv_file });
+    if (meta.endpoint) items.push({ id: "endpoint", label: "API endpoint", value: meta.endpoint });
+    if (meta.pairs && meta.pairs.length) items.push({ id: "pairs", label: "Pairs", value: joinList(meta.pairs) });
+    return items;
+  }
+  function periodText(payload, k) {
+    const w = windowOf(payload, k);
+    return "Closing prices " + w.dates[0] + " to " + w.dates[w.dates.length - 1] + " · " + k + " daily returns " + w.return_dates[0] + " to " + w.return_dates[w.return_dates.length - 1];
+  }
+  function insightsFor(payload, k) { return windowOf(payload, k).insights; }
+  function kpiCards(payload, k) {
+    const w = windowOf(payload, k), d = w.display;
+    return [
+      { id: "correlation", label: "Correlation of daily returns", value: d.correlation, note: w.rules.R1 + " (rule R1)" },
+      { id: "volatility", label: "Daily volatility", value: "BTC " + d.daily_vol_BTC + " · ETH " + d.daily_vol_ETH, note: "ETH / BTC ratio " + d.ratio + ": " + w.rules.R2 },
+      { id: "max-drawdown", label: "Maximum drawdown", value: "BTC " + d.max_drawdown_BTC.split(" ")[0] + " · ETH " + d.max_drawdown_ETH.split(" ")[0], note: "BTC " + d.max_drawdown_BTC + "; ETH " + d.max_drawdown_ETH },
+      { id: "negative-days", label: "Negative-return days", value: "BTC " + d.negative_BTC.split(" (")[0] + " · ETH " + d.negative_ETH.split(" (")[0], note: "BTC " + d.negative_BTC + "; ETH " + d.negative_ETH },
+      { id: "shared-down-days", label: "Shared down days", value: d.joint, note: "Overlap share " + d.overlap + ": " + w.rules.R3 }
+    ];
+  }
+  function baseLayout(extra) {
+    const layout = { paper_bgcolor: "#ffffff", plot_bgcolor: "#ffffff", font: FONT, margin: { l: 58, r: 16, t: 12, b: 48 }, hovermode: "closest", legend: { orientation: "h", y: 1.12, x: 0 },
+      xaxis: { gridcolor: "#eef1f6", linecolor: "#c9d1de" }, yaxis: { gridcolor: "#eef1f6", linecolor: "#c9d1de", zerolinecolor: "#c9d1de" } };
+    Object.keys(extra || {}).forEach(function (key) {
+      const value = extra[key];
+      layout[key] = (value && typeof value === "object" && !Array.isArray(value)) ? Object.assign({}, layout[key] || {}, value) : value;
+    });
+    return layout;
+  }
+  function chartSpecs(payload, k, visible) {
+    const w = windowOf(payload, k), shown = ASSETS.filter(function (a) { return visible[a]; });
+    const price = shown.map(function (a) {
+      return { type: "scatter", mode: "lines+markers", name: a, x: w.dates, y: w.index[a], customdata: w.close_usd[a], line: { color: COLORS[a], width: 2.5 }, marker: { color: COLORS[a], size: 5 },
+        hovertemplate: "%{x}<br>" + a + " index %{y:.1f}<br>Close %{customdata:,.2f} USD<extra></extra>" };
+    });
+    const returns = shown.map(function (a) {
+      return { type: "bar", name: a, x: w.return_dates, y: w.return_pct[a], marker: { color: COLORS[a] }, hovertemplate: "%{x}<br>" + a + " %{y:+.2f}%<extra></extra>" };
+    });
+    const drawdown = shown.map(function (a) {
+      return { type: "scatter", mode: "lines", name: a, x: w.dates, y: w.drawdown_pct[a], line: { color: COLORS[a], width: 2.5 }, fill: "tozeroy", fillcolor: COLORS[a] + "1f", hovertemplate: "%{x}<br>" + a + " %{y:.2f}% below peak<extra></extra>" };
+    });
+    const both = visible.BTC && visible.ETH;
+    const scatter = both
+      ? { data: [{ type: "scatter", mode: "markers", name: "Daily return pairs", x: w.return_pct.BTC, y: w.return_pct.ETH, text: w.return_dates, marker: { color: "#0b2545", size: 9, opacity: 0.75 },
+          hovertemplate: "%{text}<br>BTC %{x:+.2f}%<br>ETH %{y:+.2f}%<extra></extra>" }],
+          layout: baseLayout({ xaxis: { title: { text: "BTC daily return (%)" }, ticksuffix: "%" }, yaxis: { title: { text: "ETH daily return (%)" }, ticksuffix: "%" }, showlegend: false,
+            annotations: [{ text: "Correlation " + w.display.correlation + " (" + w.rules.R1 + ")", xref: "paper", yref: "paper", x: 0.01, y: 1.1, showarrow: false, font: { color: "#0b2545", size: 14 } }] }) }
+      : { data: [], layout: baseLayout({ annotations: [{ text: "Show both assets to compare their daily returns.", xref: "paper", yref: "paper", x: 0.5, y: 0.5, showarrow: false, font: { size: 15 } }], xaxis: { visible: false }, yaxis: { visible: false } }) };
+    return {
+      price: { data: price, layout: baseLayout({ yaxis: { title: { text: "Index (first close = 100)" } } }) },
+      returns: { data: returns, layout: baseLayout({ barmode: "group", yaxis: { title: { text: "Daily return (%)" }, ticksuffix: "%" } }) },
+      scatter: scatter,
+      drawdown: { data: drawdown, layout: baseLayout({ yaxis: { title: { text: "Below running peak (%)" }, ticksuffix: "%" } }) }
+    };
+  }
+  return { COLORS: COLORS, windowKeys: windowKeys, selectRows: selectRows, exportCsv: exportCsv, exportFileName: exportFileName, paginate: paginate, displayCell: displayCell,
+           initialVisibility: initialVisibility, toggleAsset: toggleAsset, periodText: periodText, insightsFor: insightsFor, kpiCards: kpiCards, chartSpecs: chartSpecs,
+           formatPeriod: formatPeriod, reportingPeriods: reportingPeriods, sourceName: sourceName, provenanceItems: provenanceItems };
+})();
+/* LOGIC-END */
+
+(function () {
+  "use strict";
+  const L = DashboardLogic;
+  const payload = JSON.parse(document.getElementById("dashboard-data").textContent);
+  const keys = L.windowKeys(payload);
+  const state = { k: keys[keys.length - 1], vis: L.initialVisibility(), page: 1 };
+  const PAGE_SIZE = 10;
+  const el = function (id) { return document.getElementById(id); };
+
+  function renderProvenance() {
+    const shown = {};
+    L.provenanceItems(payload.meta).forEach(function (item) { shown[item.id] = true; el("prov-" + item.id).textContent = item.value; });
+    ["source", "closes", "returns", "fetched", "generated", "input", "endpoint", "pairs"].forEach(function (id) { el("prov-row-" + id).hidden = !shown[id]; });
+  }
+  function renderControls() {
+    document.querySelectorAll("[data-window]").forEach(function (b) {
+      const k = Number(b.dataset.window); b.disabled = keys.indexOf(k) < 0; b.setAttribute("aria-pressed", String(k === state.k));
+    });
+    document.querySelectorAll("[data-asset]").forEach(function (b) { b.setAttribute("aria-pressed", String(state.vis[b.dataset.asset])); });
+  }
+  function renderInsights() {
+    const list = el("insights"); list.textContent = "";
+    L.insightsFor(payload, state.k).forEach(function (text) { const li = document.createElement("li"); li.textContent = text; list.appendChild(li); });
+    el("period-text").textContent = L.periodText(payload, state.k);
+    el("window-note").textContent = "Metrics follow the project's analysis definitions, applied to the selected period. Descriptive only.";
+  }
+  function renderKpis() {
+    const box = el("kpis"); box.textContent = "";
+    L.kpiCards(payload, state.k).forEach(function (card) {
+      const div = document.createElement("div"); div.className = "kpi"; div.id = "kpi-" + card.id;
+      [["k-label", card.label], ["k-value", card.value], ["k-note", card.note]].forEach(function (part) { const p = document.createElement("div"); p.className = part[0]; p.textContent = part[1]; div.appendChild(p); });
+      box.appendChild(div);
+    });
+  }
+  function renderCharts() {
+    const specs = L.chartSpecs(payload, state.k, state.vis);
+    const targets = { price: "chart-price", returns: "chart-returns", scatter: "chart-scatter", drawdown: "chart-drawdown" };
+    Object.keys(targets).forEach(function (key) {
+      const target = el(targets[key]);
+      if (typeof Plotly === "undefined") { target.textContent = "The charts could not be drawn because Plotly.js did not load."; return; }
+      Plotly.react(target, specs[key].data, specs[key].layout, { responsive: true, displaylogo: false, showSendToCloud: false });
+    });
+  }
+  function renderTable() {
+    const head = el("data-table").tHead; head.textContent = "";
+    const headRow = head.insertRow(); payload.columns.forEach(function (name) { const th = document.createElement("th"); th.textContent = name; headRow.appendChild(th); });
+    const body = el("data-table").tBodies[0]; body.textContent = "";
+    const p = L.paginate(L.selectRows(payload, state.k), state.page, PAGE_SIZE); state.page = p.page;
+    p.rows.forEach(function (row) { const tr = body.insertRow(); row.forEach(function (cell) { tr.insertCell().textContent = L.displayCell(cell); }); });
+    el("table-caption").textContent = "All 17 columns of the selected period (" + p.total + " rows, the first is the starting day). Empty cells are shown as a dash.";
+    el("page-status").textContent = "Rows " + p.first + " to " + p.last + " of " + p.total + " · page " + p.page + " of " + p.pages;
+    el("page-prev").disabled = p.page <= 1; el("page-next").disabled = p.page >= p.pages;
+  }
+  function render() { renderControls(); renderInsights(); renderKpis(); renderCharts(); renderTable(); }
+
+  document.querySelectorAll("[data-window]").forEach(function (b) { b.addEventListener("click", function () { state.k = Number(b.dataset.window); state.page = 1; render(); }); });
+  document.querySelectorAll("[data-asset]").forEach(function (b) { b.addEventListener("click", function () { state.vis = L.toggleAsset(state.vis, b.dataset.asset); render(); }); });
+  el("page-prev").addEventListener("click", function () { state.page -= 1; renderTable(); });
+  el("page-next").addEventListener("click", function () { state.page += 1; renderTable(); });
+  el("export-csv").addEventListener("click", function () {
+    const blob = new Blob([L.exportCsv(payload, state.k)], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob); const link = document.createElement("a");
+    link.href = url; link.download = L.exportFileName(payload, state.k); document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  });
+  renderProvenance(); render();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,38 @@
+Plotly.js (vendored, unmodified)
+
+File:            src/vendor/plotly.min.js
+Library:         plotly.js v4.1.1 (header of the file: "Copyright 2012-2026, Plotly, Inc. ... Licensed under the MIT license")
+Obtained from:   the file plotly/package_data/plotly.min.js inside the Python wheel plotly-7.1.0-py3-none-any.whl
+Wheel URL:       https://files.pythonhosted.org/packages/e5/7d/905a3a3d51087515719058c94cfbda2ff0fc14417c20d557ae3e82d8b250/plotly-7.1.0-py3-none-any.whl
+Wheel SHA-256:   dbb7fa18afce40d0a8e80d1bf162eceb3faa0ce5a77fe741ad09a74cf78f53f3 (matches the PyPI metadata)
+File SHA-256:    3b6e15d45dbb7fca5bd2094291e961ddc5472cd887009e6009a56dab668d721f (matches the wheel's RECORD entry)
+Size:            4,815,814 bytes
+The Python package was not installed; only this one file was extracted.
+
+The file contains the license notices of the third-party code bundled into it (for example MapLibre GL JS, 3-Clause BSD;
+buffer, is-buffer and ieee754 by Feross Aboukhadijeh, MIT and BSD-3-Clause; pad-left and repeat-string by Jon Schlinkert, MIT)
+as comment blocks inside the file itself. Do not strip them.
+
+The MIT license text shipped in the wheel (plotly-7.1.0.dist-info/licenses/LICENSE.txt), reproduced verbatim:
+
+MIT License
+
+Copyright (c) 2016-2026 Plotly Technologies Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
