@@ -1,6 +1,6 @@
-
 name: Daily Market Analysis
 
+# 02:15 UTC is 06:15 in Dubai. A run can also be started by hand from the Actions tab.
 on:
   schedule:
     - cron: "15 2 * * *"
@@ -9,13 +9,144 @@ on:
 permissions:
   contents: read
 
+# One run at a time. A run that has started is never cancelled; a later one waits its turn.
+concurrency:
+  group: daily-market-analysis
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
   daily-analysis:
-    runs-on: ubuntu-latest
-
+    name: Analyse, publish to Google Sheets, report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Check out the repository
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+        timeout-minutes: 3
 
-      - name: Confirm workflow execution
-        run: echo "Daily Market Analysis workflow started successfully"
+      - name: Set up Python
+        id: setup_python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+        timeout-minutes: 5
+
+      - name: Install dependencies
+        id: install_dependencies
+        timeout-minutes: 5
+        run: |
+          python3 -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Run the test suites
+        id: tests
+        timeout-minutes: 15
+        run: |
+          python3 tests/run_all.py
+
+      - name: Run the Bitcoin and Ethereum analysis
+        id: analysis
+        timeout-minutes: 10
+        run: |
+          python3 src/run_workflow.py
+
+      - name: Validate the report and CSV
+        id: validate_outputs
+        timeout-minutes: 3
+        run: |
+          python3 src/daily_automation.py validate --reports-dir reports
+
+      - name: Build the sheet payloads
+        id: build_payload
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        timeout-minutes: 3
+        run: |
+          python3 src/daily_automation.py build-payload --reports-dir reports --out-dir automation_out \
+            --run-id "$GITHUB_RUN_ID" --run-url "$RUN_URL"
+
+      - name: Write the rows to Google Sheets
+        id: post_to_sheet
+        # The four steps that hold the secrets start Python with -I -S: no site module (so no .pth, sitecustomize or usercustomize files left behind by
+        # installed packages) and no PYTHON* variables, user site or script folder on the import path. These commands use the standard library only.
+        env:
+          GOOGLE_APPS_SCRIPT_URL: ${{ secrets.GOOGLE_APPS_SCRIPT_URL }}
+          GOOGLE_APPS_SCRIPT_TOKEN: ${{ secrets.GOOGLE_APPS_SCRIPT_TOKEN }}
+        timeout-minutes: 8
+        run: |
+          python3 -I -S src/daily_automation.py post --action upsert_analysis --dir automation_out
+
+      - name: Verify the rows in Google Sheets
+        id: verify_sheet
+        env:
+          GOOGLE_APPS_SCRIPT_URL: ${{ secrets.GOOGLE_APPS_SCRIPT_URL }}
+          GOOGLE_APPS_SCRIPT_TOKEN: ${{ secrets.GOOGLE_APPS_SCRIPT_TOKEN }}
+        timeout-minutes: 8
+        run: |
+          python3 -I -S src/daily_automation.py post --action verify_analysis --dir automation_out
+
+      - name: Send the success email
+        id: send_success_email
+        env:
+          GOOGLE_APPS_SCRIPT_URL: ${{ secrets.GOOGLE_APPS_SCRIPT_URL }}
+          GOOGLE_APPS_SCRIPT_TOKEN: ${{ secrets.GOOGLE_APPS_SCRIPT_TOKEN }}
+        timeout-minutes: 8
+        run: |
+          python3 -I -S src/daily_automation.py post --action send_success_email --dir automation_out
+
+      - name: Upload the reports and results
+        id: upload_artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daily-market-analysis-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reports/report_*.md
+            reports/report_*_data.csv
+            automation_out/
+          retention-days: 14
+          if-no-files-found: warn
+        timeout-minutes: 5
+
+      - name: Send the failure notification
+        id: notify_failure
+        if: failure()
+        env:
+          GOOGLE_APPS_SCRIPT_URL: ${{ secrets.GOOGLE_APPS_SCRIPT_URL }}
+          GOOGLE_APPS_SCRIPT_TOKEN: ${{ secrets.GOOGLE_APPS_SCRIPT_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
+          OUTCOME_SETUP_PYTHON: ${{ steps.setup_python.outcome }}
+          OUTCOME_INSTALL_DEPENDENCIES: ${{ steps.install_dependencies.outcome }}
+          OUTCOME_TESTS: ${{ steps.tests.outcome }}
+          OUTCOME_ANALYSIS: ${{ steps.analysis.outcome }}
+          OUTCOME_VALIDATE_OUTPUTS: ${{ steps.validate_outputs.outcome }}
+          OUTCOME_BUILD_PAYLOAD: ${{ steps.build_payload.outcome }}
+          OUTCOME_POST_TO_SHEET: ${{ steps.post_to_sheet.outcome }}
+          OUTCOME_VERIFY_SHEET: ${{ steps.verify_sheet.outcome }}
+          OUTCOME_SEND_SUCCESS_EMAIL: ${{ steps.send_success_email.outcome }}
+          OUTCOME_UPLOAD_ARTIFACTS: ${{ steps.upload_artifacts.outcome }}
+        timeout-minutes: 8
+        run: |
+          python3 -I -S src/daily_automation.py notify-failure --dir automation_out \
+            --run-id "$GITHUB_RUN_ID" --run-url "$RUN_URL" \
+            --outcome "checkout=$OUTCOME_CHECKOUT" \
+            --outcome "setup_python=$OUTCOME_SETUP_PYTHON" \
+            --outcome "install_dependencies=$OUTCOME_INSTALL_DEPENDENCIES" \
+            --outcome "tests=$OUTCOME_TESTS" \
+            --outcome "analysis=$OUTCOME_ANALYSIS" \
+            --outcome "validate_outputs=$OUTCOME_VALIDATE_OUTPUTS" \
+            --outcome "build_payload=$OUTCOME_BUILD_PAYLOAD" \
+            --outcome "post_to_sheet=$OUTCOME_POST_TO_SHEET" \
+            --outcome "verify_sheet=$OUTCOME_VERIFY_SHEET" \
+            --outcome "send_success_email=$OUTCOME_SEND_SUCCESS_EMAIL" \
+            --outcome "upload_artifacts=$OUTCOME_UPLOAD_ARTIFACTS"
