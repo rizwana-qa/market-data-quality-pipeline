@@ -9,14 +9,17 @@ import os, shutil, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-PYTHON_SUITES = ["test_analysis_units.py", "test_report_content.py", "test_workflow_integration.py", "test_replace_failures.py", "test_csv_17col.py", "test_daily_automation.py", "test_workflow_yaml.py", "test_python_isolation.py", "test_contract_end_to_end.py", "test_workflow_expressions.py", "test_line_endings.py"]
+PYTHON_SUITES = ["test_analysis_units.py", "test_report_content.py", "test_workflow_integration.py", "test_replace_failures.py", "test_csv_17col.py", "test_daily_automation.py", "test_workflow_yaml.py", "test_python_isolation.py", "test_contract_end_to_end.py", "test_workflow_expressions.py", "test_line_endings.py", "test_job_summary_isolation.py"]
 NODE_SUITES = [os.path.join("apps_script", "test_code_gs.mjs")]
 SUITE_TIMEOUT_SECONDS = 600
+GITHUB_FILE_VARIABLES = ("GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT")   # files GitHub Actions reads after a step: the tests must never write into the real ones
 
 
 def run(command, label):
     print(f"\n===== {label} =====", flush=True)
     environment = dict(os.environ, PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")
+    for name in GITHUB_FILE_VARIABLES:
+        environment.pop(name, None)
     try:
         completed = subprocess.run(command, cwd=REPO, env=environment, timeout=SUITE_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:

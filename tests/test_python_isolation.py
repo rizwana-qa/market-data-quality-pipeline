@@ -51,6 +51,7 @@ def start(interpreter, flags, args, extra_env, cwd=None, url="https://invalid.ex
     """Start a command with dummy secrets; returns (finished process, set of hook labels that fired, text the hooks captured)."""
     sink = os.path.join(WORK, "sink.txt"); open(sink, "w", encoding="utf-8").close(); os.makedirs(cwd or WORK, exist_ok=True)
     env = dict(os.environ, EVIL_SINK=sink, GOOGLE_APPS_SCRIPT_URL=url, GOOGLE_APPS_SCRIPT_TOKEN=TOKEN, PYTHONDONTWRITEBYTECODE="1", **extra_env)
+    for name in ("GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT"): env.pop(name, None)       # the client appends to these files when it finds them: a test must never write into the real job summary
     done = subprocess.run([interpreter, *flags, *args], env=env, cwd=cwd or WORK, capture_output=True, text=True, timeout=120)
     captured = open(sink, encoding="utf-8").read(); return done, {line.split(" ")[0] for line in captured.splitlines() if line}, captured
 
