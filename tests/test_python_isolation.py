@@ -84,11 +84,11 @@ def _():
     while todo:
         name = todo.pop()
         if name not in reachable: reachable.add(name); todo += refers[name]
-    assert "_dashboard" not in reachable and not {"validate_outputs", "build_rows", "build_payloads", "command_validate", "command_build_payload"} & reachable, sorted(reachable)
+    assert "_dashboard" not in reachable and "_email_report" not in reachable and not {"validate_outputs", "build_rows", "build_payloads", "build_report_payload", "command_validate", "command_build_payload"} & reachable, sorted(reachable)
     top = {(a.name if isinstance(n, ast.Import) else n.module).split(".")[0] for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom)) for a in (n.names if isinstance(n, ast.Import) else [n])}
     assert top <= set(sys.stdlib_module_names), sorted(top - set(sys.stdlib_module_names))
     inside = [(name, (a.name if isinstance(n, ast.Import) else n.module)) for name, node in functions.items() for n in ast.walk(node) if isinstance(n, (ast.Import, ast.ImportFrom)) for a in (n.names if isinstance(n, ast.Import) else [n])]
-    assert inside == [("_dashboard", "dashboard")], inside
+    assert inside == [("_dashboard", "dashboard"), ("_email_report", "email_report")], inside        # Stage 4 added the second: the e-mail report code, loaded only by build-payload (never by a command that holds the secrets)
 
 # ================================================================ the simulated attack
 EXPECTED = {   # which start-up hook may run with which flags (True = runs)
@@ -140,6 +140,7 @@ class Imitation:
         if action == "upsert_analysis": self.rows = body["rows"]; return {"success": True, "action": action, "sheet_status": "ok", "rows_inserted": 2, "rows_updated": 0, "write_confirmed": True, "email_status": "not_attempted"}
         if action == "verify_analysis": same = body["rows"] == self.rows; return {"success": same, "matches": same, "rows_found": len(self.rows), "duplicate_keys": 0, "sheet_status": "ok" if same else "failed"}
         if action == "send_success_email": return {"success": True, "sheet_status": "ok", "email_status": "sent"}
+        if action == "send_success_report": return {"success": True, "action": action, "sheet_status": "ok", "email_status": "sent", "email_format": "html"}
         if action == "notify_failure": return {"success": True, "sheet_status": body["sheet_status"], "email_status": "sent"}
         if action == "self_check": return {"success": True, "action": action, "properties": {n: True for n in ["SPREADSHEET_ID", "SHEET_NAME", "SHARED_SECRET", "EMAIL_TO", "DATE_HEADER", "ASSET_HEADER"]},
                                            "spreadsheet_found": True, "sheet_found": True, "sheet_name_matches": True, "headers_ok": True, "email_valid": True}
@@ -148,16 +149,16 @@ class Imitation:
 RUNNER = ("import re, sys; sys.path.insert(0, " + repr(os.path.join(REPO, "src")) + "); import daily_automation as d; "
           "d.WEBHOOK_URL_PATTERN = re.compile(r'http://127\\.0\\.0\\.1:[0-9]+/macros/s/[A-Za-z0-9_-]{20,}/exec'); sys.exit(d.main(sys.argv[1:]))")   # only the address check is relaxed, so that the local imitation can be used
 
-@R.register("compatibility: post (upsert, verify, email), notify-failure and self-check all complete with exit 0 under 'python -I -S' inside the poisoned interpreter, and no hook runs")
+@R.register("compatibility: post (upsert, verify, email, HTML report), notify-failure and self-check all complete with exit 0 under 'python -I -S' inside the poisoned interpreter, and no hook runs")
 def _():
     p, server, out = poison(), Imitation(), os.path.join(WORK, "payloads")
     with contextlib.redirect_stdout(io.StringIO()): assert da.main(["build-payload", "--reports-dir", REAL_REPORTS, "--out-dir", out, "--run-id", RUN_ID, "--run-url", RUN_URL], env={}, now=date(2026, 10, 28)) == 0
-    commands = [["post", "--action", "upsert_analysis", "--dir", out], ["post", "--action", "verify_analysis", "--dir", out], ["post", "--action", "send_success_email", "--dir", out], ["self-check"],
+    commands = [["post", "--action", "upsert_analysis", "--dir", out], ["post", "--action", "verify_analysis", "--dir", out], ["post", "--action", "send_success_email", "--dir", out], ["post", "--action", "send_success_report", "--dir", out, "--artifact-url", RUN_URL + "/artifacts/987654321"], ["self-check"],
                 ["notify-failure", "--dir", out, "--run-id", RUN_ID, "--run-url", RUN_URL, "--outcome", "tests=failure"]]
     for args in commands:
         done, labels, captured = start(p["python"], ["-I", "-S"], ["-c", RUNNER, *args], {}, url=server.url)
         assert done.returncode == 0, (args, done.returncode, done.stdout[-300:], done.stderr[-300:]); assert not labels and TOKEN not in captured, (args, labels)
-    assert server.actions == ["upsert_analysis", "verify_analysis", "send_success_email", "self_check", "notify_failure"], server.actions
+    assert server.actions == ["upsert_analysis", "verify_analysis", "send_success_email", "send_success_report", "self_check", "notify_failure"], server.actions
     assert json.load(open(os.path.join(out, "upsert_analysis_result.json"), encoding="utf-8"))["rows_inserted"] == 2 and json.load(open(os.path.join(out, "send_success_email_result.json"), encoding="utf-8"))["email_status"] == "sent"
     server.httpd.shutdown()
 

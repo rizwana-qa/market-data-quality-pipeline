@@ -27,11 +27,17 @@ const server = http.createServer((req, res) => {
         return send(res, 200, "{}", { "Content-Type": "application/json" });
       }
       if (req.method === "POST" && req.url === "/_mail_failure") {      // make the imitated mail service fail ({"message": "..."}) or work again ({})
-        world.state.mail.failWith = JSON.parse(body || "{}").message || null;
+        const request = JSON.parse(body || "{}");                                                  // {"message": "...", "only_html": true} makes only the HTML message fail
+        world.state.mail.failWith = request.only_html || request.after_send ? null : request.message || null; world.state.mail.failHtmlWith = request.only_html ? request.message || null : null;
+        world.state.mail.failHtmlAfterSend = request.after_send ? request.message || "error after sending" : null; world.state.failBlob = Boolean(request.fail_blob);       // after_send: delivered, then an error; fail_blob: the HTML message cannot be prepared
+        return send(res, 200, "{}", { "Content-Type": "application/json" });
+      }
+      if (req.method === "POST" && req.url === "/_cache_failure") {      // make the imitated cache service fail on a write and/or a read ({"put": "...", "get": "..."}) or work again ({})
+        const request = JSON.parse(body || "{}"); world.state.cacheFail.put = request.put || null; world.state.cacheFail.get = request.get || null;
         return send(res, 200, "{}", { "Content-Type": "application/json" });
       }
       if (req.method === "GET" && req.url === "/_state") {
-        return send(res, 200, JSON.stringify({ rows: world.dataRows(), headings: world.sheet.data[0], mail: world.state.mail.sent, writes: world.state.setValuesCalls, lock_waits: world.state.lock.waits, cache_entries: world.state.cache.size }), { "Content-Type": "application/json" });
+        return send(res, 200, JSON.stringify({ rows: world.dataRows(), headings: world.sheet.data[0], mail: world.state.mail.sent, mail_attempts: world.state.mail.attempts, writes: world.state.setValuesCalls, lock_waits: world.state.lock.waits, cache_entries: world.state.cache.size, cache_puts: world.state.cachePuts }), { "Content-Type": "application/json" });
       }
       send(res, 404, "not found");
     } catch (error) {

@@ -242,10 +242,10 @@ def _():
     outputs = da.validate_outputs(REAL_REPORTS, today=TODAY); outputs["metrics"] = dict(outputs["metrics"], correlation=None)
     raises(da.AutomationError, lambda: da.build_rows(outputs, RUN_ID), "correlation")
 
-@R.register("cli build-payload: writes the three JSON files, exits 0, and no file or output contains a token or webhook URL")
+@R.register("cli build-payload: writes the JSON files (the three original bodies and, since Stage 4, the success-report body), exits 0, and no file or output contains a token or webhook URL")
 def _():
     reports, out = fresh_reports(), new_temp_dir(); code, stdout, stderr = run_cli(["build-payload", "--reports-dir", reports, "--out-dir", out, "--run-id", RUN_ID, "--run-url", RUN_URL], env={"GOOGLE_APPS_SCRIPT_TOKEN": TOKEN, "GOOGLE_APPS_SCRIPT_URL": "https://script.google.com/macros/s/AKfycbzSECRETDEPLOYMENT/exec"}, now=TODAY)
-    assert code == 0, (stdout, stderr); assert sorted(os.listdir(out)) == ["send_success_email.json", "upsert_analysis.json", "verify_analysis.json"]
+    assert code == 0, (stdout, stderr); assert sorted(os.listdir(out)) == ["send_success_email.json", "send_success_report.json", "upsert_analysis.json", "verify_analysis.json"]
     blob = stdout + stderr + "".join(open(os.path.join(out, f), encoding="utf-8").read() for f in os.listdir(out)); assert TOKEN not in blob and "AKfycbz" not in blob
 
 @R.register("cli validate: exit 0 with a one-line summary for good outputs; exit 1 with the reason on stderr for stale or broken outputs")
@@ -586,5 +586,430 @@ def _():
     assert not re.search(r"print\([^)]*(TOKEN|SCRIPT_URL)", source), "printing a secret variable"; assert not re.search(r"https?://(?!script\.google\.com|github\.com|api\.kraken)[A-Za-z0-9.-]+/", re.sub(r"#.*", "", source).replace("http://127.0.0.1", "")), "an unexpected URL literal"
     assert "GOOGLE_APPS_SCRIPT_URL" in source and "GOOGLE_APPS_SCRIPT_TOKEN" in source, "the existing secret names are used"
     assert "SHEETS_WEBHOOK" not in source, "no second set of secret names"
+
+# ---------------------------------------------------------------- added in Stage 2: the client-side mapping of new workflow steps to the stage names the deployed web app accepts
+CODE_GS_STAGES = re.findall(r"'([a-z_]+)'", re.search(r"^const STAGES = \[(.*?)\];", open(os.path.join(REPO, "apps_script", "Code.gs"), encoding="utf-8").read(), re.M).group(1))
+OLD_STEP_IDS = ["checkout", "setup_python", "install_dependencies", "tests", "analysis", "validate_outputs", "build_payload", "post_to_sheet", "verify_sheet", "send_success_email", "upload_artifacts"]
+NEW_STEP_MAP = {"clear_stale_outputs": "analysis", "build_dashboard": "analysis", "stage_deliverables": "validate_outputs", "upload_deliverables": "upload_artifacts"}
+
+@R.register("stage mapping: the pipeline order includes the four new steps, the eleven existing step names are sent unchanged, and every name that can reach the web app is one Code.gs already accepts (its STAGES list)")
+def _():
+    mapping = getattr(da, "SERVER_STAGE", None); assert mapping is not None, "MISSING FEATURE: daily_automation.py has no SERVER_STAGE mapping yet"
+    assert da.STAGE_ORDER == ["checkout", "setup_python", "install_dependencies", "tests", "clear_stale_outputs", "analysis", "validate_outputs", "build_dashboard", "stage_deliverables", "build_payload", "post_to_sheet", "verify_sheet", "upload_deliverables", "send_success_email", "upload_artifacts"], da.STAGE_ORDER
+    assert mapping == NEW_STEP_MAP, mapping
+    for name in da.STAGE_ORDER: assert mapping.get(name, name) in CODE_GS_STAGES, f"{name} would be sent as {mapping.get(name, name)!r}, which Code.gs does not accept"
+    assert all(name not in mapping for name in OLD_STEP_IDS), "an existing step name must not be renamed"
+
+@R.register("notify-failure for each NEW workflow step: the stage sent is the mapped one that Code.gs accepts, the error summary still names the real step, and the first failed step in pipeline order wins")
+def _():
+    assert getattr(da, "SERVER_STAGE", None), "MISSING FEATURE: daily_automation.py has no SERVER_STAGE mapping yet"
+    for step_id, server_stage in NEW_STEP_MAP.items():
+        assert step_id in da.STAGE_ORDER, f"MISSING FEATURE: {step_id} is not in STAGE_ORDER"; position = da.STAGE_ORDER.index(step_id)
+        outcomes = [f"{n}=success" for n in da.STAGE_ORDER[:position]] + [f"{step_id}=failure"] + [f"{n}=skipped" for n in da.STAGE_ORDER[position + 1:]]
+        model = Model()
+        with served(model) as server:
+            arguments = ["notify-failure", "--dir", new_temp_dir(), "--run-id", RUN_ID, "--run-url", RUN_URL]
+            for outcome in outcomes: arguments += ["--outcome", outcome]
+            code, out, err = run_cli(arguments, env=env_for(server)); assert code == 0, (step_id, out, err)
+            sent = model.mail[0]; assert sent["stage"] == server_stage and sent["stage"] in CODE_GS_STAGES and f"step {step_id} ended" in sent["error_summary"], sent
+    assert da.derive_stage({"clear_stale_outputs": "success", "build_dashboard": "failure", "stage_deliverables": "failure"}) == "build_dashboard"
+
+@R.register("stage mapping does not weaken validation: names that are not workflow steps - typos and look-alikes of the new steps - are still refused before any request")
+def _():
+    with served(Model()) as server:
+        for bad in ("stage_deliverable", "build_dashboards", "upload_deliverable", "clear_stale_output", "dashboard", "deliverables"):
+            code, out, err = run_cli(["notify-failure", "--dir", new_temp_dir(), "--run-id", RUN_ID, "--run-url", RUN_URL, "--outcome", f"{bad}=failure"], env=env_for(server)); assert code == 1, bad
+        assert server.calls == [], "no request may be made for an unknown step"
+
+# ---------------------------------------------------------------- a failure notice the web app SUPPRESSES (skipped_duplicate) is not a delivered email, and must not be reported as one
+# The web app keeps one failure notice per (run id, stage) for up to 6 hours and answers skipped_duplicate for a repeat. Several workflow steps share one stage (build_dashboard, clear_stale_outputs and analysis
+# all travel as 'analysis'), and a re-run of a workflow keeps its run id, so a later failure can be answered skipped_duplicate although no email was sent for IT.
+class DedupingModel(Model):
+    """Like the real web app: one failure notice per (run id, stage); a repeat is answered skipped_duplicate and nothing is mailed."""
+    def __init__(self, token=TOKEN): super().__init__(token); self.notices = set()
+    def __call__(self, index, payload):
+        if isinstance(payload, dict) and payload.get("action") == "notify_failure" and payload.get("token") == self.token:
+            key = (payload.get("run_id"), payload.get("stage"))
+            if key in self.notices: return ("json", {"success": True, "action": "notify_failure", "sheet_status": payload.get("sheet_status"), "email_status": "skipped_duplicate", "request_id": "r-2"})
+            self.notices.add(key)
+        return super().__call__(index, payload)
+
+def notice(server, failing, run_id=RUN_ID):
+    """One notify-failure run, started as the workflow does after `failing` failed (earlier steps succeeded, later ones skipped).  Returns (exit code, stdout, stderr, job summary text, result file)."""
+    folder = new_temp_dir(); position = da.STAGE_ORDER.index(failing); summary = os.path.join(folder, "summary.md")
+    flags = []
+    for name in da.STAGE_ORDER: flags += ["--outcome", f"{name}={'success' if da.STAGE_ORDER.index(name) < position else 'failure' if name == failing else 'skipped'}"]
+    code, out, err = run_cli(["notify-failure", "--dir", folder, "--run-id", run_id, "--run-url", RUN_URL.replace(RUN_ID, run_id)] + flags, env=env_for(server, GITHUB_STEP_SUMMARY=summary))
+    text = open(summary, encoding="utf-8").read() if os.path.exists(summary) else ""
+    path = os.path.join(folder, "notify_failure_result.json"); result = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else None
+    return code, out, err, text, result
+def claims_delivery(text): return bool(re.search(r"(?i)\bOK\b|email was sent|email sent|notice was sent|Failure email: sent|\bsent\b(?! nothing)", text.replace("NOT sent", "").replace("not sent", "")))
+
+@R.register("suppressed notice: a first failure notice that the web app delivers is reported exactly as before - sent, OK, no suppression wording, no extra result fields")
+def _():
+    model = DedupingModel()
+    with served(model) as server:
+        code, out, err, summary, result = notice(server, "analysis"); assert code == 0 and len(model.mail) == 1, (code, out, err)
+        assert "email_status=sent" in out and out.strip().endswith("OK") and "SUPPRESSED" not in out + err + summary and "suppressed" not in out + err + summary.lower(), (out, err)
+        assert "- Failure email: sent" in summary and result["email_status"] == "sent" and not {"suppressed", "failed_step", "server_stage"} & set(result), (summary, result)
+
+@R.register("suppressed notice: a LATER failure of a DIFFERENT step that shares the mapped stage (analysis, then build_dashboard, in the same run) is reported as suppressed - the log names the real step and the stage and says nothing was delivered")
+def _():
+    model = DedupingModel()
+    with served(model) as server:
+        assert notice(server, "analysis")[0] == 0 and len(model.mail) == 1
+        code, out, err, summary, result = notice(server, "build_dashboard")
+        assert code == 0 and len(model.mail) == 1 and len(server.posts()) == 2, "the suppressed notice must not be retried or mailed again"
+        log = out + err; assert "SUPPRESSED" in log and "WARNING" in err and "for step build_dashboard (server stage analysis) was NOT delivered" in err, (out, err)
+        assert not claims_delivery(log), f"the log claims a delivery: {log!r}"
+
+@R.register("suppressed notice: the SAME step failing again in the same run is suppressed and reported as such")
+def _():
+    model = DedupingModel()
+    with served(model) as server:
+        assert notice(server, "stage_deliverables")[0] == 0 and len(model.mail) == 1
+        code, out, err, summary, result = notice(server, "stage_deliverables")
+        assert code == 0 and len(model.mail) == 1 and "SUPPRESSED" in out + err and "for step stage_deliverables (server stage validate_outputs) was NOT delivered" in err and not claims_delivery(out + err), (out, err)
+
+@R.register("suppressed notice: the job summary says the notice was SUPPRESSED, names the real step and the server stage, keeps the original failure details, and never claims a failure email was sent")
+def _():
+    model = DedupingModel()
+    with served(model) as server:
+        notice(server, "analysis"); code, out, err, summary, result = notice(server, "build_dashboard")
+        lowered = summary.lower()
+        assert "suppressed" in lowered and "- Failed workflow step: build_dashboard" in summary and "- Server stage used for deduplication: analysis" in summary and "deduplication" in lowered, summary
+        assert "step build_dashboard ended with outcome failure" in summary and "outcomes:" in summary and "upload_artifacts=skipped" in summary, "the original failure details must be kept in full: " + summary
+        assert "upload_artifacts=skipped" in err, "the log keeps the full original details too: " + err
+        assert not claims_delivery(summary), f"the summary claims a delivery: {summary!r}"
+        assert "- Failure email: skipped_duplicate" not in summary or "NOT" in summary, summary
+
+@R.register("suppressed notice: the result file tells suppression from delivery - suppressed true, the real failed step, the server stage, email_status skipped_duplicate (the server's own word)")
+def _():
+    model = DedupingModel()
+    with served(model) as server:
+        notice(server, "analysis"); code, out, err, summary, result = notice(server, "clear_stale_outputs")
+        assert result["suppressed"] is True and result["failed_step"] == "clear_stale_outputs" and result["server_stage"] == "analysis" and result["email_status"] == "skipped_duplicate" and result["success"] is True, result
+
+@R.register("suppressed notice: a failure in a DIFFERENT server stage, or in a NEW run, is still delivered and reported as sent")
+def _():
+    model = DedupingModel()
+    with served(model) as server:
+        assert notice(server, "analysis")[0] == 0
+        for failing, run in (("stage_deliverables", RUN_ID), ("build_dashboard", "987654321")):
+            code, out, err, summary, result = notice(server, failing, run); assert code == 0 and "email_status=sent" in out and "SUPPRESSED" not in out + err + summary and not result.get("suppressed"), (failing, run, out, err)
+        assert len(model.mail) == 3
+
+@R.register("genuine notification failures stay failures and are never reported as suppressed: EMAIL_FAILED, UNAUTHORIZED, INVALID_PAYLOAD, a missing email_status, success:false together with skipped_duplicate, a non-JSON reply, a server error")
+def _():
+    replies = [{"success": False, "error": "EMAIL_FAILED", "sheet_status": "not_attempted", "email_status": "failed"}, {"success": False, "error": "UNAUTHORIZED", "sheet_status": "not_attempted", "email_status": "not_attempted"},
+               {"success": False, "error": "INVALID_PAYLOAD"}, {"success": True, "sheet_status": "not_attempted"}, {"success": False, "error": "INTERNAL_ERROR", "email_status": "skipped_duplicate"}, {"success": False, "email_status": "skipped_duplicate"}]
+    for reply in replies:
+        with served(lambda i, p, r=reply: ("json", r)) as server:
+            code, out, err, summary, result = notice(server, "analysis"); assert code == 1 and "SUPPRESSED" not in out + err + summary and not (result or {}).get("suppressed"), (reply, code, out, err)
+    for spec in (("html", "<html>an error page</html>"), ("http", 500, b"down")):
+        with served(lambda i, p, s=spec: s) as server:
+            code, out, err, summary, result = notice(server, "analysis"); assert code == 1 and "SUPPRESSED" not in out + err + summary, (spec, code, out, err)
+
+@R.register("suppressed notice: no secret appears in the log, the job summary or the result file, and the suppressed request is made exactly once (never retried)")
+def _():
+    model = DedupingModel()
+    with served(model) as server:
+        notice(server, "analysis"); before = len(server.posts()); code, out, err, summary, result = notice(server, "build_dashboard"); assert len(server.posts()) == before + 1
+        blob = out + err + summary + json.dumps(result)
+        for secret in (TOKEN, server.url, "FAKEDEPLOYMENTID0123456789"): assert secret not in blob, "a secret leaked"
+
+# ================================================================ Stage 4: the HTML success report (action send_success_report); the plain send_success_email stays as it is
+# The client builds the report data and the PNG charts in the step that has no secrets (build-payload), and sends them in the step that has (post). Nothing in the posting path imports the analysis code.
+ARTIFACT_URL = RUN_URL + "/artifacts/987654321"
+REPORT_KEYS = {"action", "token", "analysis_date", "rows", "run_id", "workflow_url", "validation_status", "sheet_update", "summary", "artifact_url", "report"}
+
+class ReportModel(Model):
+    """Like the real web app for the new action: exact keys only, one success e-mail per run and date, and a choice of the e-mail format it reports. Other actions behave as in Model."""
+    def __init__(self, token=TOKEN, fmt="html"): super().__init__(token); self.fmt, self.done, self.requests = fmt, set(), []
+    def __call__(self, index, payload):
+        if isinstance(payload, dict) and payload.get("token") == self.token and payload.get("action") == "send_success_report":
+            self.requests.append(payload)
+            if set(payload) != REPORT_KEYS: return ("json", {"success": False, "error": "INVALID_PAYLOAD", "sheet_status": "ok", "email_status": "not_attempted"})
+            key = (payload["run_id"], payload["analysis_date"])
+            if key in self.done: return ("json", {"success": True, "action": "send_success_report", "sheet_status": "ok", "email_status": "skipped_duplicate"})
+            self.done.add(key); self.mail.append(payload)
+            return ("json", {"success": True, "action": "send_success_report", "sheet_status": "ok", "email_status": "sent", "email_format": self.fmt})
+        return super().__call__(index, payload)
+
+def verified_dir(server):
+    """build-payload, then the upsert and the read-back verification against the imitated web app: the state in which the workflow reaches the success e-mail."""
+    out = prepared_dir()
+    for action in ("upsert_analysis", "verify_analysis"): assert run_cli(["post", "--action", action, "--dir", out], env=env_for(server))[0] == 0, action
+    return out
+
+def post_report(server, out, url=ARTIFACT_URL, summary=None, **extra):
+    arguments = ["post", "--action", "send_success_report", "--dir", out] + ([] if url is None else ["--artifact-url", url])
+    if summary: extra["GITHUB_STEP_SUMMARY"] = summary
+    return run_cli(arguments, env=env_for(server, **extra))
+
+def lines_that_command(text): return [line for line in text.splitlines() if line.startswith("::") or line.startswith("##[")]
+
+@R.register("report: the 'post' command knows the new action next to the three old ones, and the 'send_success_email' action and its payload are not changed")
+def _():
+    assert da.POST_ACTIONS == ["upsert_analysis", "verify_analysis", "send_success_email", "send_success_report"], da.POST_ACTIONS
+    assert set(da.build_payloads(da.validate_outputs(REAL_REPORTS, today=TODAY), RUN_ID, RUN_URL)) == {"upsert_analysis", "verify_analysis", "send_success_email"}, "build_payloads must still return only the three existing bodies"
+
+@R.register("report build-payload: writes the report request as a fourth file - the old three bodies plus the report, no token, no artifact link yet, strict JSON, comfortably inside the web app's 20,000-character limit")
+def _():
+    out = prepared_dir(); assert sorted(os.listdir(out)) == ["send_success_email.json", "send_success_report.json", "upsert_analysis.json", "verify_analysis.json"], sorted(os.listdir(out))
+    body, email = read_json(out, "send_success_report.json"), read_json(out, "send_success_email.json")
+    assert body["action"] == "send_success_report" and set(body) == set(email) | {"report"} and all(body[key] == email[key] for key in email if key != "action") and "token" not in body and "artifact_url" not in body and "sheet_update" not in body
+    assert set(body["report"]) == {"meta", "assets", "pair", "coverage", "charts"} and len(body["report"]["charts"]) == 3 and len(body["report"]["coverage"]) == 17
+    text = open(os.path.join(out, "send_success_report.json"), encoding="utf-8").read(); assert len(json.dumps(body)) + 400 < 19000, len(json.dumps(body)); assert "NaN" not in text and "Infinity" not in text
+
+@R.register("report build-payload: the generation time stamp is the real UTC time in the report's own format (replaceable in tests)")
+def _():
+    from datetime import datetime, timezone
+    old = da.utc_now; da.utc_now = lambda: datetime(2026, 10, 28, 2, 16, 5, 777, tzinfo=timezone.utc)
+    try: out = prepared_dir()
+    finally: da.utc_now = old
+    assert read_json(out, "send_success_report.json")["report"]["meta"]["generated_at"] == "2026-10-28 02:16:05 UTC"
+
+@R.register("report build-payload: if the report cannot be built, the other three payloads are still written and the step still succeeds - with a visible warning - and the success report is then NOT sent (no file, so the post step fails loudly)")
+def _():
+    old = da.build_report_payload
+    def broken(*args, **kwargs): raise da.AutomationError("the charts could not be drawn: " + TOKEN)
+    da.build_report_payload = broken
+    try: reports, out = fresh_reports(), new_temp_dir(); code, stdout, stderr = run_cli(["build-payload", "--reports-dir", reports, "--out-dir", out, "--run-id", RUN_ID, "--run-url", RUN_URL], env={"GOOGLE_APPS_SCRIPT_TOKEN": TOKEN}, now=TODAY)
+    finally: da.build_report_payload = old
+    assert code == 0 and sorted(os.listdir(out)) == ["send_success_email.json", "upsert_analysis.json", "verify_analysis.json"], (code, stdout, stderr)
+    assert "WARNING" in stderr and "HTML success report" in stderr and "not be sent" in stderr and "the charts could not be drawn" in stderr and TOKEN not in stdout + stderr, stderr
+    with served(ReportModel()) as server:
+        assert run_cli(["post", "--action", "send_success_report", "--dir", out, "--artifact-url", ARTIFACT_URL], env=env_for(server))[0] == 1 and server.calls == [], "no request when there is no report"
+
+@R.register("report post: a request with the token, the sheet counts from the recorded upsert, the artifact link exactly as given and the stored report goes out ONCE; the reply is recorded with its e-mail format; exit 0")
+def _():
+    model = ReportModel()
+    with served(model) as server:
+        out = verified_dir(server); summary = os.path.join(new_temp_dir(), "summary.md"); code, stdout, stderr = post_report(server, out, summary=summary); assert code == 0, (stdout, stderr)
+        assert len(model.requests) == 1 and set(model.requests[0]) == REPORT_KEYS, set(model.requests[0]) ^ REPORT_KEYS
+        sent, stored = model.requests[0], read_json(out, "send_success_report.json")
+        assert sent["token"] == TOKEN and sent["artifact_url"] == ARTIFACT_URL and sent["sheet_update"] == {"rows_inserted": 2, "rows_updated": 0} and sent["report"] == stored["report"] and sent["summary"] == stored["summary"]
+        result = read_json(out, "send_success_report_result.json"); assert result["success"] is True and result["email_status"] == "sent" and result["email_format"] == "html" and result["sheet_status"] == "ok", result
+        assert "email_format=html" in stdout and stdout.strip().endswith("OK") and "WARNING" not in stderr, (stdout, stderr)
+        text = open(summary, encoding="utf-8").read(); assert "send_success_report" in text and "Success email: sent" in text and "html" in text and TOKEN not in text, text
+
+@R.register("report post: the artifact link must be this run's artifact page - missing, empty, another repository, another run, http, a query, a fragment, a trailing slash, spaces, a non-numeric id, a line break, a script link and an over-long link are all refused before any request")
+def _():
+    bad = {"missing": None, "empty": "", "blank": "   ", "other repository": ARTIFACT_URL.replace("rizwana-qa", "someone-else"), "other run": RUN_URL.replace(RUN_ID, "5") + "/artifacts/987654321", "http": ARTIFACT_URL.replace("https", "http"),
+           "query": ARTIFACT_URL + "?a=1", "fragment": ARTIFACT_URL + "#x", "trailing slash": ARTIFACT_URL + "/", "spaces": ARTIFACT_URL + " x", "leading space": " " + ARTIFACT_URL, "id not digits": ARTIFACT_URL.replace("987654321", "abc"),
+           "no id": RUN_URL + "/artifacts/", "run page only": RUN_URL, "line break": ARTIFACT_URL + "\n::error::pwned", "script link": "javascript:alert(1)", "other host": ARTIFACT_URL.replace("github.com", "github.com.evil.example"),
+           "userinfo": ARTIFACT_URL.replace("https://", "https://user@"), "long id": ARTIFACT_URL.replace("987654321", "9" * 40), "path escape": RUN_URL + "/../artifacts/1"}
+    model = ReportModel()
+    with served(model) as server:
+        out = verified_dir(server); before = len(server.calls)
+        for name, url in bad.items():
+            code, stdout, stderr = post_report(server, out, url=url); assert code == 1 and "artifact" in stderr.lower(), (name, code, stderr)
+            assert "pwned" not in stdout + stderr and not lines_that_command(stdout + stderr) and "javascript:" not in stdout + stderr, (name, "the rejected link must not be echoed", stderr)
+        assert len(server.calls) == before and model.mail == [], "no request may be made with an invalid artifact link"
+        assert not os.path.exists(os.path.join(out, "send_success_report_result.json")) or read_json(out, "send_success_report_result.json").get("success") is not True
+        assert post_report(server, out)[0] == 0 and len(model.mail) == 1, "the valid link is still accepted"
+
+@R.register("report post: --artifact-url belongs to the new action only (the other actions refuse it and send nothing), and the new action cannot run without it")
+def _():
+    with served(ReportModel()) as server:
+        out = prepared_dir()
+        for action in ("upsert_analysis", "verify_analysis", "send_success_email"):
+            code, stdout, stderr = run_cli(["post", "--action", action, "--dir", out, "--artifact-url", ARTIFACT_URL], env=env_for(server)); assert code == 1 and "artifact" in stderr.lower(), (action, stderr)
+        assert server.calls == []
+
+@R.register("report post: like the old success e-mail it needs the confirmed upsert AND the passed read-back; otherwise it refuses and sends nothing")
+def _():
+    model = ReportModel()
+    with served(model) as server:
+        out = prepared_dir(); code, stdout, stderr = post_report(server, out); assert code == 1 and "spreadsheet" in stderr.lower() and server.calls == [], (stderr, server.calls)
+        assert run_cli(["post", "--action", "upsert_analysis", "--dir", out], env=env_for(server))[0] == 0; before = len(server.calls)
+        code, stdout, stderr = post_report(server, out); assert code == 1 and len(server.calls) == before, "the verification result is missing"
+        for name, patch in (("upsert_analysis_result.json", {"sheet_status": "failed"}), ("upsert_analysis_result.json", {"write_confirmed": False}), ("verify_analysis_result.json", {"matches": False})):
+            folder = verified_dir(server); path = os.path.join(folder, name); data = json.load(open(path, encoding="utf-8")); data.update(patch); json.dump(data, open(path, "w", encoding="utf-8"))
+            before = len(server.calls); code, stdout, stderr = post_report(server, folder); assert code == 1 and len(server.calls) == before and model.mail == [], (name, patch)
+
+@R.register("report post: the report request itself is checked before it is sent - a stored report that is invalid, has an unknown key, or is for another run or date is refused and nothing is sent")
+def _():
+    def tamper(change):
+        def apply(data): change(data); return data
+        return apply
+    cases = {"another run id": tamper(lambda d: d.update(run_id="5")), "another workflow url": tamper(lambda d: d.update(workflow_url=RUN_URL + "9")), "unknown key": tamper(lambda d: d.update(html="<b>x</b>")),
+             "report missing": tamper(lambda d: d.pop("report")), "report is a string": tamper(lambda d: d.update(report="x")), "a chart with a wrong signature": tamper(lambda d: d["report"]["charts"][0].update(png_base64="AAAA" + d["report"]["charts"][0]["png_base64"][4:])),
+             "four charts": tamper(lambda d: d["report"]["charts"].append(dict(d["report"]["charts"][0]))), "action changed": tamper(lambda d: d.update(action="send_success_email"))}
+    model = ReportModel()
+    with served(model) as server:
+        for name, change in cases.items():
+            out = verified_dir(server); path = os.path.join(out, "send_success_report.json"); data = json.load(open(path, encoding="utf-8")); json.dump(change(data), open(path, "w", encoding="utf-8"))
+            before = len(server.calls); code, stdout, stderr = post_report(server, out); assert code == 1 and len(server.calls) == before and model.mail == [], (name, code, stderr)
+
+@R.register("report post: a request larger than the web app accepts is refused on the client, before it leaves the machine (the 20,000-character limit is never exceeded, and never raised)")
+def _():
+    assert da.MAX_REQUEST_CHARS == 19000 < 20000 and da.MAX_REQUEST_CHARS == load("email_report").MAX_REQUEST_CHARS
+    old, model = da.MAX_REQUEST_CHARS, ReportModel()
+    with served(model) as server:
+        out = verified_dir(server); da.MAX_REQUEST_CHARS = 3000
+        try: code, stdout, stderr = post_report(server, out)
+        finally: da.MAX_REQUEST_CHARS = old
+        assert code == 1 and "larger than" in stderr and model.mail == [] and len(model.requests) == 0, (stderr, len(model.requests))
+        result = read_json(out, "send_success_report_result.json"); assert result["success"] is False and result["email_status"] == "not_attempted" and result["error"] == "NOT_SENT", result
+
+@R.register("report post: a repeat for the same run and date is answered skipped_duplicate - accepted as done (exit 0, no second e-mail), reported as such")
+def _():
+    model = ReportModel()
+    with served(model) as server:
+        out = verified_dir(server); assert post_report(server, out)[0] == 0
+        code, stdout, stderr = post_report(server, out); assert code == 0 and len(model.mail) == 1 and "email_status=skipped_duplicate" in stdout, (stdout, stderr)
+        assert read_json(out, "send_success_report_result.json")["email_status"] == "skipped_duplicate" and "email_format" not in read_json(out, "send_success_report_result.json")
+
+@R.register("report post: an e-mail the web app sent as plain text instead (text_fallback) is a success with a VISIBLE warning in the log and the job summary, and the result file says so")
+def _():
+    model = ReportModel(fmt="text_fallback")
+    with served(model) as server:
+        out = verified_dir(server); summary = os.path.join(new_temp_dir(), "summary.md"); code, stdout, stderr = post_report(server, out, summary=summary); assert code == 0, (stdout, stderr)
+        assert "WARNING" in stderr and "plain-text" in stderr and "text_fallback" in stderr, stderr; assert "email_format=text_fallback" in stdout
+        text = open(summary, encoding="utf-8").read(); assert "text_fallback" in text and "plain-text" in text and "HTML" in text, text
+        assert read_json(out, "send_success_report_result.json")["email_format"] == "text_fallback"
+
+@R.register("report post: the reply is not trusted on its word - 'sent' without a known e-mail format, an unknown format, a failed e-mail, an unauthorised or invalid-request reply are all failures; the real error code is shown")
+def _():
+    sent = {"success": True, "action": "send_success_report", "sheet_status": "ok", "email_status": "sent"}
+    cases = {"no format": sent, "unknown format": dict(sent, email_format="pdf"), "format with markup": dict(sent, email_format="<b>html</b>"),
+             "email failed": {"success": False, "error": "EMAIL_FAILED", "sheet_status": "ok", "email_status": "failed"}, "unauthorised": {"success": False, "error": "UNAUTHORIZED", "sheet_status": "not_attempted", "email_status": "not_attempted"},
+             "old web app": {"success": False, "error": "INVALID_REQUEST"}, "invalid payload": {"success": False, "error": "INVALID_PAYLOAD", "sheet_status": "ok", "email_status": "not_attempted"},
+             "sheet not ok": dict(sent, sheet_status="failed", email_format="html"), "success false": dict(sent, success=False, email_format="html")}
+    for name, reply in cases.items():
+        model = Model()
+        def responder(index, payload, reply=reply):
+            return ("json", reply) if isinstance(payload, dict) and payload.get("action") == "send_success_report" else model(index, payload)
+        with served(responder) as server:
+            out = verified_dir(server); code, stdout, stderr = post_report(server, out); assert code == 1, (name, stdout, stderr)
+            if "error" in reply: assert reply["error"] in stderr + stdout, (name, stderr)
+            assert os.path.exists(os.path.join(out, "send_success_report_result.json")), f"{name}: the reply must be recorded even when it is a failure"
+    assert da.problems_in("send_success_report", dict(sent, email_format="html"), 2) == [] and da.problems_in("send_success_report", dict(sent, email_format="text_fallback"), 2) == []
+    assert da.problems_in("send_success_report", dict(sent, email_status="skipped_duplicate"), 2) == [] and da.problems_in("send_success_report", dict(sent, email_status="skipped_duplicate", email_format="html"), 2) == []
+    for bad in (sent, dict(sent, email_format="pdf"), dict(sent, email_format="html", email_status="failed"), dict(sent, email_format="html", email_status="not_attempted"), {"success": True, "email_status": "sent", "email_format": "html"}): assert da.problems_in("send_success_report", bad, 2), bad
+
+@R.register("report post: clean_reply keeps the e-mail format only when it is one of the two known words")
+def _():
+    base = {"success": True, "email_status": "sent"}
+    assert da.EMAIL_FORMATS == {"html", "text_fallback"}
+    for good in ("html", "text_fallback"): assert da.clean_reply(dict(base, email_format=good), 1)["email_format"] == good
+    for bad in ("pdf", "<b>", "HTML", "", None, 5, ["html"], "html\n::error::x"): assert "email_format" not in da.clean_reply(dict(base, email_format=bad), 1), bad
+
+@R.register("report failure path: a failed success report is announced by the normal failure notice for the step send_success_email, and that notice names the web app's error from the report's own result file")
+def _():
+    model = ReportModel(); model.fail_mail = True
+    def responder(index, payload):
+        if isinstance(payload, dict) and payload.get("action") == "send_success_report": return ("json", {"success": False, "error": "INVALID_PAYLOAD", "sheet_status": "ok", "email_status": "not_attempted"})
+        return model(index, payload)
+    with served(responder) as server:
+        out = verified_dir(server); assert post_report(server, out)[0] == 1
+        arguments = ["notify-failure", "--dir", out, "--run-id", RUN_ID, "--run-url", RUN_URL] + sum((["--outcome", f"{name}={'success' if da.STAGE_ORDER.index(name) < da.STAGE_ORDER.index('send_success_email') else 'failure' if name == 'send_success_email' else 'skipped'}"] for name in da.STAGE_ORDER), [])
+        code, stdout, stderr = run_cli(arguments, env=env_for(server)); assert code == 0, (stdout, stderr)
+        notice_body = model.mail[-1]; assert notice_body["action"] == "notify_failure" and notice_body["stage"] == "send_success_email" and "web app error INVALID_PAYLOAD" in notice_body["error_summary"], notice_body
+
+@R.register("report post: transport problems are retried like every other request (the same final-error rules), the report goes out at most once on success, and nothing secret is printed, summarised or recorded")
+def _():
+    model = ReportModel(); calls = {"report": 0}
+    def responder(index, payload):
+        if isinstance(payload, dict) and payload.get("action") == "send_success_report":
+            calls["report"] += 1
+            if calls["report"] == 1: return ("http", 503, b"busy")
+        return model(index, payload)
+    with served(responder) as server:
+        out = verified_dir(server); summary = os.path.join(new_temp_dir(), "summary.md"); code, stdout, stderr = post_report(server, out, summary=summary); assert code == 0 and calls["report"] == 2 and len(model.mail) == 1, (stdout, stderr, calls)
+        blob = stdout + stderr + open(summary, encoding="utf-8").read() + json.dumps(read_json(out, "send_success_report_result.json"))
+        for secret in (TOKEN, server.url, "FAKEDEPLOYMENTID0123456789"): assert secret not in blob, "a secret leaked"
+
+@R.register("report isolation: the posting path never imports the analysis, dashboard or report code (the process that holds the token stays minimal) and the report code is loaded only by build-payload")
+def _():
+    source = open(os.path.join(REPO, "src", "daily_automation.py"), encoding="utf-8").read()
+    def body(name): start = source.index(f"def {name}("); end = source.index("\ndef ", start + 1); return source[start:end]
+    for name in ("command_post", "post_action", "check_artifact_url", "clean_reply", "problems_in"):
+        text = body(name); assert "import " not in text and "_dashboard(" not in text and "_email_report(" not in text and "email_report" not in text, name
+    assert "def _email_report" in source and "_email_report()" in body("build_report_payload"), "the report code is imported lazily, inside build_report_payload only"
+
+@R.register("report build: a report request that would not fit the web app's limit is refused when it is BUILT (not only when it is posted), with the numbers in the message")
+def _():
+    from datetime import datetime, timezone
+    outputs = da.validate_outputs(REAL_REPORTS, today=TODAY); email = da.build_payloads(outputs, RUN_ID, RUN_URL)["send_success_email"]; moment = datetime(2026, 10, 28, 2, 16, 5, tzinfo=timezone.utc); old = da.MAX_REQUEST_CHARS
+    assert da.build_report_payload(outputs, email, moment)["action"] == "send_success_report"
+    da.MAX_REQUEST_CHARS = 9000
+    try: raises(da.AutomationError, lambda: da.build_report_payload(outputs, email, moment), "more than the limit of 9000")
+    finally: da.MAX_REQUEST_CHARS = old
+
+@R.register("report post: a send_outcome_unknown reply fails the step with an explicit message, is recorded as such, is requested ONCE (never retried by the client), and claims neither a delivery nor a fallback")
+def _():
+    unknown = {"success": False, "error": "SEND_OUTCOME_UNKNOWN", "sheet_status": "ok", "email_status": "send_outcome_unknown", "message": "It is not known whether the email was sent."}
+    model, posts = Model(), {"report": 0}
+    def responder(index, payload):
+        if isinstance(payload, dict) and payload.get("action") == "send_success_report": posts["report"] += 1; return ("json", unknown)
+        return model(index, payload)
+    with served(responder) as server:
+        out = verified_dir(server); summary = os.path.join(new_temp_dir(), "summary.md"); code, stdout, stderr = post_report(server, out, summary=summary); text = stdout + stderr
+        assert code == 1 and posts["report"] == 1, (code, posts, text); assert "send_outcome_unknown" in text and "mailbox" in text and "plain-text" in text and "duplicate" in text, text
+        assert "WARNING" not in text and not stdout.strip().endswith("OK") and "text_fallback" not in text, text
+        outcome = read_json(out, "send_success_report_result.json"); assert (outcome["success"], outcome["error"], outcome["email_status"], outcome["sheet_status"]) == (False, "SEND_OUTCOME_UNKNOWN", "send_outcome_unknown", "ok") and "email_format" not in outcome and outcome["attempts"] == 1, outcome
+        written = open(summary, encoding="utf-8").read(); assert "send_outcome_unknown" in written and "mailbox" in written and "Success email: sent" not in written, written
+
+@R.register("report post: send_outcome_unknown is a known e-mail status that is never accepted as done, with an explicit explanation for the new action only (the old action's messages are unchanged)")
+def _():
+    status = "send_outcome_unknown"; assert status in da.EMAIL_STATUSES and status not in da.EMAIL_DONE and "SEND_OUTCOME_UNKNOWN" not in da.RETRYABLE_ERROR_CODES, "an unknown outcome must never be retried"
+    assert da.clean_reply({"success": False, "email_status": status}, 1)["email_status"] == status
+    reply = {"success": False, "error": "SEND_OUTCOME_UNKNOWN", "sheet_status": "ok", "email_status": status}
+    problems = da.problems_in("send_success_report", reply, 2); assert any("mailbox" in text and "plain-text" in text for text in problems) and not any("email_status is" in text for text in problems), problems
+    old = da.problems_in("send_success_email", reply, 2); assert not any("mailbox" in text for text in old) and any("email_status is send_outcome_unknown" in text for text in old), old
+
+@R.register("cache failure after a send: a sent_dedup_failed reply (legacy and HTML action) is a SUCCESS with a visible warning - exit 0, ONE request, no pause for a retry, result and job summary recorded, and no claim that the e-mail failed")
+def _():
+    for action, extra in (("send_success_email", []), ("send_success_report", ["--artifact-url", ARTIFACT_URL])):
+        reply = {"success": True, "action": action, "sheet_status": "ok", "email_status": "sent_dedup_failed", "message": "The email was sent, but the duplicate-protection entry could not be recorded."}
+        if action == "send_success_report": reply["email_format"] = "html"
+        model, calls = Model(), {"n": 0}
+        def responder(index, payload, action=action, reply=reply):
+            if isinstance(payload, dict) and payload.get("action") == action: calls["n"] += 1; return ("json", reply)
+            return model(index, payload)
+        with served(responder) as server:
+            out = verified_dir(server); summary = os.path.join(new_temp_dir(), "summary.md"); code, stdout, stderr = run_cli(["post", "--action", action, "--dir", out] + extra, env=env_for(server, GITHUB_STEP_SUMMARY=summary)); text = stdout + stderr
+            assert code == 0 and calls["n"] == 1 and server.pauses == [], (action, code, calls, server.pauses, text)
+            assert stdout.strip().endswith("OK") and "email_status=sent_dedup_failed" in stdout, (action, stdout)
+            assert "WARNING" in stderr and "WAS SENT" in stderr and "duplicate protection" in stderr and "6 hours" in stderr and "FAILED" not in text, (action, stderr)
+            outcome = read_json(out, f"{action}_result.json"); assert (outcome["success"], outcome["email_status"], outcome["sheet_status"], outcome["attempts"]) == (True, "sent_dedup_failed", "ok", 1) and "error" not in outcome, outcome
+            written = open(summary, encoding="utf-8").read(); assert "Success email: sent_dedup_failed" in written and "WAS SENT" in written and "duplicate protection" in written and "FAILED" not in written, written
+
+@R.register("cache failure after a send: sent_dedup_failed is a known status that counts as done for the two success actions and (since S4-3) the failure notice, still needs the e-mail format for the report, is not an error code to retry, and a normal 'sent' is reported without any warning")
+def _():
+    status = "sent_dedup_failed"; assert status in da.EMAIL_STATUSES and status not in da.EMAIL_DONE and "SENT_DEDUP_FAILED" not in da.RETRYABLE_ERROR_CODES
+    sent = {"success": True, "sheet_status": "ok", "email_status": status}
+    assert da.problems_in("send_success_email", sent, 2) == [] and da.problems_in("send_success_report", dict(sent, email_format="html"), 2) == []
+    assert da.problems_in("send_success_report", sent, 2), "the report action still needs its e-mail format"; assert da.problems_in("send_success_email", dict(sent, success=False), 2), "success must be true"
+    assert da.problems_in("notify_failure", sent, 0) == [] and da.problems_in("notify_failure", dict(sent, success=False), 0), "S4-3: the failure notice accepts the status too (it was refused before S4-3, when only the success handlers could report it), but only as a success"
+    assert da.clean_reply(sent, 1)["email_status"] == status
+    with served(Model()) as server:
+        out = verified_dir(server); code, stdout, stderr = run_cli(["post", "--action", "send_success_email", "--dir", out], env=env_for(server)); assert code == 0 and "WARNING" not in stderr and "WAS SENT" not in stderr, stderr
+
+@R.register("failure notice, cache failure after a send: a sent_dedup_failed reply is a DELIVERED notice with a visible warning - exit 0, ONE request, no retry pause, result and job summary recorded, not reported as suppressed, and no claim that the notice failed")
+def _():
+    reply = {"success": True, "action": "notify_failure", "sheet_status": "not_attempted", "email_status": "sent_dedup_failed", "message": "The email was sent, but the duplicate-protection entry could not be recorded."}; calls = {"n": 0}
+    def responder(index, payload): calls["n"] += 1; return ("json", reply)
+    with served(responder) as server:
+        code, out, err, summary, result = notice(server, "tests"); text = out + err + summary
+        assert code == 0 and calls["n"] == 1 and server.pauses == [], (code, calls, server.pauses, out, err)
+        assert out.strip().endswith("OK") and "email_status=sent_dedup_failed" in out, out
+        assert "WARNING" in err and "failure notice WAS SENT" in err and "duplicate protection" in err and "6 hours" in err and "notification step" in err, err
+        assert "SUPPRESSED" not in text and "NOT delivered" not in text and "NOT SENT" not in text and "FAILED:" not in out + err, text
+        assert "Failure email: sent_dedup_failed" in summary and "WAS SENT" in summary and "duplicate protection" in summary and "6 hours" in summary and "notification step" in summary, summary
+        assert result["email_status"] == "sent_dedup_failed" and result["success"] is True and result["attempts"] == 1 and not {"suppressed", "failed_step", "server_stage"} & set(result), result
+
+@R.register("failure notice: genuine failures are unchanged by S4-3 - EMAIL_FAILED and INTERNAL_ERROR replies still fail the step, never say the notice was sent, and INTERNAL_ERROR is still repeated (nothing was sent when it is raised)")
+def _():
+    with served(lambda i, p: ("json", {"success": False, "error": "EMAIL_FAILED", "sheet_status": "not_attempted", "email_status": "failed"})) as server:
+        code, out, err, summary, result = notice(server, "tests"); assert code == 1 and "WAS SENT" not in out + err + summary and result["error"] == "EMAIL_FAILED", (code, out, err)
+    seen = {"n": 0}
+    def flaky(index, payload):
+        seen["n"] += 1; return ("json", {"success": False, "error": "INTERNAL_ERROR", "sheet_status": "not_attempted", "email_status": "not_attempted"}) if seen["n"] == 1 else ("json", {"success": True, "action": "notify_failure", "sheet_status": "not_attempted", "email_status": "sent"})
+    with served(flaky) as server:
+        code, out, err, summary, result = notice(server, "tests"); assert code == 0 and seen["n"] == 2 and len(server.pauses) == 1 and result["email_status"] == "sent", (code, seen, out, err)
 
 R.finish()

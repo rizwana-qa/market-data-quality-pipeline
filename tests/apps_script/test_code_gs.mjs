@@ -1,12 +1,12 @@
 // Tests for apps_script/Code.gs (Google Apps Script web app), run in Node against fake Google services. Written BEFORE Code.gs.
 // Usage: node tests/apps_script/test_code_gs.mjs
 import assert from "node:assert/strict";
-import { makeWorld, readSource, HEADERS, SECRET, WORKFLOW_URL, btcRow, ethRow, summary, upsertPayload, emailPayload, failurePayload } from "./harness.mjs";
+import { makeWorld, readSource, HEADERS, SECRET, WORKFLOW_URL, btcRow, ethRow, summary, upsertPayload, emailPayload, failurePayload, reportPayload, reportBody, makePng, pngBase64, ARTIFACT_URL, COVERAGE_NAMES } from "./harness.mjs";
 
 let passed = 0, failed = 0;
 function check(name, fn) { try { fn(); passed++; console.log("PASS", name); } catch (e) { failed++; console.log("FAIL", name, "|", String(e && e.message).split("\n")[0].slice(0, 230)); } }
 const world = (o) => makeWorld(o);
-const KNOWN_CODES = new Set(["UNAUTHORIZED", "NOT_CONFIGURED", "INVALID_REQUEST", "INVALID_PAYLOAD", "HEADER_MISMATCH", "SHEET_NOT_FOUND", "DUPLICATE_EXISTING_ROWS", "LOCK_TIMEOUT", "WRITE_UNCONFIRMED", "NOT_VERIFIED", "EMAIL_FAILED", "INTERNAL_ERROR", "POST_REQUIRED"]);
+const KNOWN_CODES = new Set(["UNAUTHORIZED", "NOT_CONFIGURED", "INVALID_REQUEST", "INVALID_PAYLOAD", "HEADER_MISMATCH", "SHEET_NOT_FOUND", "DUPLICATE_EXISTING_ROWS", "LOCK_TIMEOUT", "WRITE_UNCONFIRMED", "NOT_VERIFIED", "EMAIL_FAILED", "INTERNAL_ERROR", "POST_REQUIRED", "SEND_OUTCOME_UNKNOWN"]);
 const clean = (w) => assert.deepEqual(w.dataRows(), [], "the sheet must be untouched");
 const noMail = (w) => assert.equal(w.state.mail.sent.length, 0, "no email may be sent");
 const refused = (w, payload, code, what) => { const r = w.call(payload); assert.equal(r.success, false, what + ": must fail"); assert.equal(r.error, code, what + ": error code (got " + r.error + ")"); return r; };
@@ -292,6 +292,271 @@ check("no sheet value ever starts with a formula character after any accepted wr
   const w = world({ now: new Date("2026-10-29T02:15:30Z") }); w.call(upsertPayload()); const second = w.call(upsertPayload({ analysis_date: "2026-10-28", rows: [btcRow({ "Run date": "2026-10-28" }), ethRow({ "Run date": "2026-10-28" })] }));
   assert.equal(second.success, true, JSON.stringify(second)); assert.equal(w.dataRows().length, 4);
   for (const row of w.dataRows()) for (const cell of row) if (typeof cell === "string") assert.ok(!/^[=+\-@\t\r]/.test(cell), cell);
+});
+
+// ------------------------------------------------------------------ send_success_report: the HTML success e-mail with inline PNG charts (the existing send_success_email stays as it is)
+// The web app builds the HTML ITSELF from validated fields; it never accepts HTML from the caller. These tests judge the message handed to MailApp: htmlBody, inlineImages (cid) and the plain-text body.
+// They run offline against imitated Google services: they prove structure and safety, NOT how Gmail or Outlook draw the message.
+const sentReport = (w, over) => { w.call(upsertPayload()); return w.call(reportPayload(over)); };
+const lastMail = (w) => w.state.mail.sent[w.state.mail.sent.length - 1];
+const textOf = (html) => html.replace(/<!--[\s\S]*?-->/g, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&").replace(/\s+/g, " ");
+const VOID_TAGS = new Set(["meta", "br", "img", "hr", "link", "input"]);
+function structureOf(html) {
+  const problems = [], stack = [], counts = {}, images = [], hrefs = [];
+  const body = html.replace(/<!--[\s\S]*?-->/g, "").replace(/<style[\s\S]*?<\/style>/gi, "<style></style>");
+  for (const match of body.matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9]*)([^>]*)>/g)) {
+    const [, closing, name, rest] = match; const tag = name.toLowerCase(); counts[tag] = (counts[tag] || 0) + 1;
+    if (!closing && tag === "img") images.push(rest);
+    if (!closing) for (const link of rest.matchAll(/href="([^"]*)"/g)) hrefs.push(link[1]);
+    if (VOID_TAGS.has(tag)) continue;
+    if (!closing) stack.push(tag); else { const top = stack.pop(); if (top !== tag) problems.push(`</${tag}> closes <${top}>`); }
+  }
+  if (stack.length) problems.push("unclosed: " + stack.join(","));
+  return { problems, counts, images, hrefs };
+}
+
+check("report: authentication comes first - a wrong, missing, padded or non-string token is UNAUTHORIZED and nothing is sent", () => {
+  const w = world(); w.call(upsertPayload());
+  for (const token of ["wrong", "", " " + SECRET, SECRET + " ", 12345, null, { token: SECRET }]) refused(w, reportPayload({ token }), "UNAUTHORIZED", "token " + JSON.stringify(token));
+  const noToken = reportPayload(); delete noToken.token; refused(w, noToken, "UNAUTHORIZED", "missing token"); noMail(w);
+});
+check("report: a valid request sends ONE e-mail - to EMAIL_TO, the usual subject, a plain-text body, an HTML body and the three charts as inline PNG images - and reports email_format html", () => {
+  const w = world(); const r = sentReport(w); assert.equal(r.success, true, JSON.stringify(r)); assert.equal(r.action, "send_success_report"); assert.equal(r.email_status, "sent"); assert.equal(r.email_format, "html"); assert.equal(r.sheet_status, "ok");
+  assert.equal(w.state.mail.sent.length, 1); const m = lastMail(w);
+  assert.equal(m.to, "owner@example.test"); assert.equal(m.subject, "Daily Market Analysis OK - 2026-10-27"); assert.ok(typeof m.body === "string" && m.body.length > 200 && typeof m.htmlBody === "string" && m.htmlBody.length > 2000);
+  assert.deepEqual(Object.keys(m.inlineImages).sort(), ["chart_drawdown", "chart_indexed", "chart_returns"]);
+  for (const image of Object.values(m.inlineImages)) { assert.equal(image.contentType, "image/png"); assert.equal(image.head, "89504e470d0a1a0a"); assert.ok(image.size > 100 && image.size < 6000, String(image.size)); }
+});
+check("report: the plain-text body is the EXISTING success body, unchanged, followed only by the link to the deliverables", () => {
+  const a = world(); a.call(upsertPayload()); a.call(emailPayload()); const old = lastMail(a).body;
+  const b = world(); sentReport(b); const body = lastMail(b).body;
+  assert.ok(body.startsWith(old), "the existing text must come first and unchanged"); const extra = body.slice(old.length); assert.ok(extra.includes(ARTIFACT_URL) && extra.length < 400, extra);
+});
+check("report: NO e-mail unless the sheet really holds the rows (NOT_VERIFIED), exactly like the existing success e-mail", () => {
+  const w = world(); const r = refused(w, reportPayload(), "NOT_VERIFIED", "no rows"); assert.equal(r.email_status, "not_attempted"); noMail(w);
+  const t = world(); t.call(upsertPayload()); t.sheet.data[1][2] = 1; refused(t, reportPayload(), "NOT_VERIFIED", "tampered"); noMail(t);
+});
+check("report: duplicate protection is shared with the old action - the same run and date is sent once, whichever action comes first; another run is still sent", () => {
+  const w = world(); sentReport(w); assert.equal(w.call(reportPayload()).email_status, "skipped_duplicate"); assert.equal(w.call(emailPayload()).email_status, "skipped_duplicate"); assert.equal(w.state.mail.sent.length, 1);
+  const v = world(); v.call(upsertPayload()); v.call(emailPayload()); assert.equal(v.call(reportPayload()).email_status, "skipped_duplicate"); assert.equal(v.state.mail.sent.length, 1);
+  const other = reportPayload({ run_id: "987654321", workflow_url: WORKFLOW_URL.replace("123456789", "987654321"), artifact_url: ARTIFACT_URL.replace("runs/123456789", "runs/987654321") }); assert.equal(w.call(other).email_status, "sent"); assert.equal(w.state.mail.sent.length, 2);
+});
+check("report: strict validation - an unknown or missing key, a wrong artifact link, a malformed report and every kind of bad chart are refused with INVALID_PAYLOAD; nothing is sent and nothing is remembered", () => {
+  const png = (o) => pngBase64(Object.assign({ pad: 1800 }, o)); const chart = (p, i, change) => { Object.assign(p.report.charts[i], change); };
+  const mutations = {
+    "unknown top-level key": (p) => { p.extra = 1; }, "missing artifact_url": (p) => { delete p.artifact_url; }, "missing report": (p) => { delete p.report; },
+    "artifact over http": (p) => { p.artifact_url = ARTIFACT_URL.replace("https", "http"); }, "artifact of another repository": (p) => { p.artifact_url = ARTIFACT_URL.replace("rizwana-qa", "someone-else"); },
+    "artifact of another run": (p) => { p.artifact_url = ARTIFACT_URL.replace("runs/123456789", "runs/5"); }, "artifact with a query": (p) => { p.artifact_url = ARTIFACT_URL + "?x=1"; },
+    "artifact with a trailing slash": (p) => { p.artifact_url = ARTIFACT_URL + "/"; }, "artifact id not digits": (p) => { p.artifact_url = ARTIFACT_URL.replace("987654321", "abc"); },
+    "artifact with a line break": (p) => { p.artifact_url = ARTIFACT_URL + "\nHost: evil"; }, "artifact is a number": (p) => { p.artifact_url = 5; }, "artifact is a javascript link": (p) => { p.artifact_url = "javascript:alert(1)"; },
+    "report without meta": (p) => { delete p.report.meta; }, "report without charts": (p) => { delete p.report.charts; }, "extra key in report": (p) => { p.report.html = "<b>x</b>"; }, "report is an array": (p) => { p.report = []; },
+    "meta.rows as text": (p) => { p.report.meta.rows = "31"; }, "meta.rows too small": (p) => { p.report.meta.rows = 3; }, "meta.first_date invalid": (p) => { p.report.meta.first_date = "2026-13-40"; },
+    "meta.data_fetched in another format": (p) => { p.report.meta.data_fetched = "yesterday"; }, "meta.generated_at missing": (p) => { delete p.report.meta.generated_at; },
+    "asset missing": (p) => { delete p.report.assets.eth; }, "asset field missing": (p) => { delete p.report.assets.btc.return_7d; }, "return out of range": (p) => { p.report.assets.btc.return_30d = -3; },
+    "return as text": (p) => { p.report.assets.btc.return_14d = "0.1"; }, "annualised volatility negative": (p) => { p.report.assets.eth.volatility_annualised = -1; }, "worst day date invalid": (p) => { p.report.assets.btc.worst_day.date = "x"; },
+    "negative days negative": (p) => { p.report.assets.btc.negative_days = -1; }, "drawdown date invalid": (p) => { p.report.assets.btc.drawdown_peak = "2026-02-31"; },
+    "pair ratio negative": (p) => { p.report.pair.volatility_ratio = -1; }, "overlap share above 1": (p) => { p.report.pair.overlap_share = 1.5; }, "pair missing field": (p) => { delete p.report.pair.joint_negative_days; },
+    "coverage with 16 entries": (p) => { p.report.coverage.pop(); }, "coverage in another order": (p) => { p.report.coverage.reverse(); }, "coverage with an unknown name": (p) => { p.report.coverage[3].name = "btc_return2"; },
+    "coverage valid_rows above the row count": (p) => { p.report.coverage[1].valid_rows = 99; }, "coverage valid_rows negative": (p) => { p.report.coverage[1].valid_rows = -1; },
+    "coverage latest with a line break": (p) => { p.report.coverage[1].latest = "1\n2"; }, "coverage latest too long": (p) => { p.report.coverage[1].latest = "9".repeat(40); }, "coverage latest not text": (p) => { p.report.coverage[1].latest = 5; },
+    "no charts": (p) => { p.report.charts = []; }, "four charts": (p) => { p.report.charts.push(Object.assign({}, p.report.charts[0], { id: "extra" })); }, "duplicate chart id": (p) => { p.report.charts[1].id = "indexed"; },
+    "unknown chart id": (p) => { chart(p, 0, { id: "../etc" }); }, "chart width 601": (p) => { chart(p, 0, { width: 601 }); }, "chart height 100": (p) => { chart(p, 0, { height: 100 }); },
+    "chart is not base64": (p) => { chart(p, 0, { png_base64: "***not base64***" }); }, "chart is empty": (p) => { chart(p, 0, { png_base64: "" }); }, "chart far too large": (p) => { chart(p, 0, { png_base64: png({ pad: 7000 }) }); },
+    "chart without the PNG signature": (p) => { chart(p, 0, { png_base64: png({ signature: [1, 2, 3, 4, 5, 6, 7, 8] }) }); }, "chart is a truncated file": (p) => { chart(p, 0, { png_base64: Buffer.from(makePng({ pad: 1800 }).subarray(0, 20)).toString("base64") }); },
+    "chart IHDR says another width": (p) => { chart(p, 0, { png_base64: png({ width: 400 }) }); }, "chart IHDR says another height": (p) => { chart(p, 0, { png_base64: png({ height: 200 }) }); },
+    "chart with one damaged byte (its checksum fails)": (p) => { chart(p, 0, { png_base64: png({ corrupt: true }) }); },
+    "chart base64 with line breaks inside": (p) => { const s = png({}); chart(p, 0, { png_base64: s.slice(0, 120) + "\r\n\r\n" + s.slice(120) }); },
+    "chart is true colour not palette": (p) => { chart(p, 0, { png_base64: png({ colorType: 2 }) }); }, "chart without IEND": (p) => { chart(p, 0, { png_base64: png({ iend: false }) }); },
+    "chart scale low above high": (p) => { chart(p, 0, { low: 200, high: 100 }); }, "chart scale as text": (p) => { chart(p, 1, { low: "-1" }); },
+    "summary invalid": (p) => { p.summary.btc.close = "x"; }, "validation status unknown": (p) => { p.validation_status = "MAYBE"; },
+  };
+  const w = world(); w.call(upsertPayload());
+  for (const [name, change] of Object.entries(mutations)) { const p = reportPayload(); change(p); const r = w.call(p); assert.equal(r.success, false, name + ": must fail"); assert.equal(r.error, "INVALID_PAYLOAD", `${name}: error code (got ${r.error})`); assert.equal(r.email_status, "not_attempted", name); }
+  noMail(w); assert.equal(w.state.cache.size, 0, "a refused request must leave no deduplication entry");
+});
+check("report: text from the request reaches the HTML only ESCAPED - script tags, quotes, ampersands and angle brackets in observations, rule labels and variable values", () => {
+  const evil = `<script>alert(1)</script> & "q" 'a' <img src=x onerror=alert(2)>`; const body = reportBody(); body.coverage[1].latest = `<b>&"x'`;
+  const w = world(); const r = sentReport(w, { summary: summary({ observations: [evil], rules: { R1: evil, R2: "<i>r2</i>", R3: "r3" } }), report: body }); assert.equal(r.success, true, JSON.stringify(r));
+  const m = lastMail(w), html = m.htmlBody;
+  assert.ok(!/<script/i.test(html) && !/<img src=x/i.test(html) && !html.includes("<b>&\"x'") && !html.includes("<i>r2</i>"), "raw markup from the request reached the HTML");
+  assert.ok(html.includes("&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;q&quot; &#39;a&#39; &lt;img src=x onerror=alert(2)&gt;") && html.includes("&lt;b&gt;&amp;&quot;x&#39;"), "the text must be present, escaped");
+  assert.ok(m.body.includes(evil) || m.body.includes("alert(1)"), "the plain-text part may carry the text as it is");
+});
+check("report: the HTML is email-safe and well formed - balanced tables, presentation roles, inline styles, no script/link/svg/form/iframe, no remote images, links only to the two GitHub addresses, every cid backed by an inline image with alt text and explicit size, under the size budget", () => {
+  const w = world(); sentReport(w); const m = lastMail(w), html = m.htmlBody, s = structureOf(html);
+  assert.deepEqual(s.problems, [], s.problems.join("; ")); assert.ok(html.startsWith("<!DOCTYPE html>") && /<html[^>]* lang="en"/.test(html) && /<meta name="viewport"/.test(html) && /<title>[^<]+<\/title>/.test(html));
+  for (const forbidden of ["script", "link", "svg", "iframe", "form", "object", "embed", "video", "audio", "base", "input", "button"]) assert.ok(!s.counts[forbidden], "forbidden tag: " + forbidden);
+  assert.ok(!/@import|url\(|javascript:|expression\(|http:\/\//i.test(html), "forbidden construct in the HTML"); assert.ok(s.counts.table >= 5 && !s.counts.div, "layout must be tables");
+  for (const tag of html.match(/<table[^>]*>/g)) assert.ok(/role="presentation"/.test(tag) && /style="/.test(tag), "table without role/inline style: " + tag);
+  const cids = s.images.map((attributes) => { assert.ok(/ src="cid:chart_[a-z]+"/.test(attributes) && / alt="[^"]{20,}"/.test(attributes) && / width="600"/.test(attributes) && / height="240"/.test(attributes) && /style="/.test(attributes), attributes); return /src="cid:([a-z_]+)"/.exec(attributes)[1]; });
+  assert.deepEqual([...cids].sort(), Object.keys(m.inlineImages).sort(), "every cid needs exactly one inline image and the other way round");
+  assert.deepEqual([...new Set(s.hrefs)].sort(), [ARTIFACT_URL, WORKFLOW_URL].sort(), "links"); assert.ok(html.length < 60000, "HTML size " + html.length);
+});
+check("report: the content - date and status, both closes, daily and 7/14/30-day returns, volatility, drawdown with its dates, correlation, the rule labels, the observations, all 17 variables, the verification status, the time stamps and the disclaimer", () => {
+  const w = world(); sentReport(w); const text = textOf(lastMail(w).htmlBody);
+  for (const needle of ["Daily Market Analysis", "2026-10-27", "PASSED", "80,001.90", "2,320.45", "-0.06%", "+0.31%", "-2.10%", "+3.40%", "-5.20%", "+5.00%", "-10.00%", "1.61%", "2.12%", "31.00%", "40.00%", "-7.52%", "-14.89%", "2026-10-02", "2026-10-15",
+                         "0.928089", "strong positive correlation", "ETH noticeably more volatile", "down days largely coincide", "Both assets fell on 16 of 30 days.", "1.317", "12", "0.86", "-6.11%", "2026-10-12",
+                         "Google Sheets", "verified", "2 inserted", "0 updated", "2026-10-28 02:15:12 UTC", "2026-10-28 02:15:20 UTC", "Educational use only. Not financial advice.", "17 of 17"]) assert.ok(text.includes(needle), "the e-mail lacks: " + needle);
+  for (const name of COVERAGE_NAMES) assert.ok(text.includes(name), "variable missing: " + name);
+});
+check("report: data-quality status comes from the data - a variable with fewer valid rows than expected is shown as MISSING and the headline count drops; the two return variables are expected to have one row fewer", () => {
+  const ok = world(); sentReport(ok); const good = textOf(lastMail(ok).htmlBody); assert.ok(!good.includes("MISSING") && good.includes("17 of 17"));
+  const body = reportBody(); body.coverage[8].valid_rows = 29; const bad = world(); sentReport(bad, { report: body }); const text = textOf(lastMail(bad).htmlBody); assert.ok(text.includes("MISSING") && text.includes("16 of 17") && !text.includes("17 of 17"), text.slice(0, 200));
+  const returns = reportBody(); returns.coverage[3].valid_rows = 31; const odd = world(); sentReport(odd, { report: returns }); assert.ok(textOf(lastMail(odd).htmlBody).includes("MISSING"), "31 valid return rows cannot be right (one fewer than the closes)");
+});
+// ---- no duplicate success e-mail (S4-1): the plain-text fallback is allowed ONLY while the HTML message has not been handed to the mail service. Once MailApp.sendEmail has been called for the HTML
+// message, an error or an unclear outcome is reported as send_outcome_unknown and nothing more is sent. "attempts" records every call to the mail service (true = an HTML message), delivered or not.
+const withHtml = (transform) => readSource().replace("function reportHtml_(d, secret) {", "function reportHtmlOriginal_(d, secret) {") + "\nfunction reportHtml_(d, secret) { return (" + transform.toString() + ")(reportHtmlOriginal_(d, secret)); }\n";
+const attempts = (w) => w.state.mail.attempts.slice();
+const NO_SEND_CLAIM = (r) => r.success === false && r.error === "SEND_OUTCOME_UNKNOWN" && r.email_status === "send_outcome_unknown" && r.sheet_status === "ok" && !("email_format" in r) && typeof r.message === "string" && r.message.length > 10;
+
+check("report: HTML PREPARATION failing before any send (the images cannot be built, or the HTML builder fails) allows the plain-text fallback - one plain e-mail, no HTML attempt, reply text_fallback", () => {
+  const a = world(); a.state.failBlob = true; const r = sentReport(a);
+  assert.equal(r.success, true, JSON.stringify(r)); assert.equal(r.email_status, "sent"); assert.equal(r.email_format, "text_fallback"); assert.deepEqual(attempts(a), [false], "only the plain message was ever handed to the mail service");
+  assert.equal(a.state.mail.sent.length, 1); assert.ok(!lastMail(a).htmlBody && !lastMail(a).inlineImages && lastMail(a).body.length > 200);
+  const b = world({ source: withHtml(() => { throw new Error("the HTML builder is broken"); }) }); const r2 = sentReport(b);
+  assert.equal(r2.email_format, "text_fallback"); assert.deepEqual(attempts(b), [false]); assert.equal(b.state.mail.sent.length, 1); assert.ok(!lastMail(b).htmlBody);
+});
+check("report: HTML VALIDATION failing before any send (a script tag, an image that is not one of the inline charts, or an over-long page) allows the plain-text fallback - no HTML attempt", () => {
+  const variants = {
+    "script tag": withHtml((html) => html.replace("</body>", "<script>alert(1)</script></body>")),
+    "remote image instead of an inline chart": withHtml((html) => html.replace('src="cid:chart_returns"', 'src="https://example.test/chart.png"')),
+    "inline chart not referenced": withHtml((html) => html.replace('src="cid:chart_drawdown"', 'src=""')),
+    "an image that points to a cid with no attachment": withHtml((html) => html.replace('src="cid:chart_returns"', 'src="cid:chart_unknown"')),
+    "an attached chart that the page does not show": withHtml((html) => html.replace('src="cid:chart_drawdown"', 'data-removed="x"')),
+    "an extra remote image besides the three charts": withHtml((html) => html.replace("</body>", '<img src="https://example.test/x.png"></body>')),
+    "over-long page": withHtml((html) => html + "x".repeat(100001)),
+  };
+  for (const [name, source] of Object.entries(variants)) {
+    const w = world({ source }); const r = sentReport(w); assert.equal(r.success, true, name + ": " + JSON.stringify(r)); assert.equal(r.email_format, "text_fallback", name);
+    assert.deepEqual(attempts(w), [false], name + ": the invalid HTML must never reach the mail service"); assert.equal(w.state.mail.sent.length, 1, name); assert.ok(!lastMail(w).htmlBody, name);
+  }
+  const good = world(); sentReport(good); assert.deepEqual(attempts(good), [true], "the real HTML passes the check");
+});
+check("report: when the HTML send succeeds exactly ONE e-mail goes out - the HTML message, reply email_format html", () => {
+  const w = world(); const r = sentReport(w); assert.equal(r.success, true); assert.equal(r.email_status, "sent"); assert.equal(r.email_format, "html");
+  assert.deepEqual(attempts(w), [true]); assert.equal(w.state.mail.sent.length, 1); assert.ok(lastMail(w).htmlBody);
+});
+check("report: if the HTML send THROWS, nothing more is sent - no plain-text fallback - and the reply says send_outcome_unknown (not sent, not failed); the e-mail may or may not have been delivered", () => {
+  const w = world(); w.state.mail.failHtmlWith = "The HTML message was refused"; const r = sentReport(w);
+  assert.ok(NO_SEND_CLAIM(r), JSON.stringify(r)); assert.deepEqual(attempts(w), [true], "exactly one call to the mail service, for the HTML message"); assert.equal(w.state.mail.sent.length, 0);
+  assert.ok(!JSON.stringify(r).includes("refused"), "the mail service's own text must not be echoed");
+  const q = world(); q.state.mail.failWith = "Service invoked too many times for one day: email."; const r2 = sentReport(q);
+  assert.ok(NO_SEND_CLAIM(r2), "any error from the HTML send is ambiguous, whatever its text: " + JSON.stringify(r2)); assert.deepEqual(attempts(q), [true]); assert.equal(q.state.mail.sent.length, 0);
+});
+check("report: an AMBIGUOUS HTML send - the message was delivered but the call then reported an error - sends no second e-mail and reports send_outcome_unknown", () => {
+  const w = world(); w.state.mail.failHtmlAfterSend = "Exception: the answer was lost"; const r = sentReport(w);
+  assert.ok(NO_SEND_CLAIM(r), JSON.stringify(r)); assert.deepEqual(attempts(w), [true]); assert.equal(w.state.mail.sent.length, 1, "the delivered HTML message is the only e-mail"); assert.ok(lastMail(w).htmlBody);
+  assert.ok(!JSON.stringify(r).includes("answer was lost"));
+});
+check("report: the outcomes are told apart exactly - a pre-send double failure is EMAIL_FAILED (failed, nothing sent), a confirmed fallback is sent/text_fallback, an unknown outcome is neither", () => {
+  const both = world(); both.state.failBlob = true; both.state.mail.failWith = "Service invoked too many times for one day: email."; const r = sentReport(both);
+  assert.equal(r.success, false); assert.equal(r.error, "EMAIL_FAILED"); assert.equal(r.email_status, "failed"); assert.equal(r.sheet_status, "ok"); assert.ok(!("email_format" in r)); assert.deepEqual(attempts(both), [false]); assert.equal(both.state.mail.sent.length, 0);
+  assert.equal(both.state.cache.size, 0, "nothing is remembered after a failure");
+  both.state.mail.failWith = null; assert.equal(both.call(reportPayload()).email_format, "text_fallback", "a later request can still be sent");
+  const statuses = new Set(); for (const set of [(w) => {}, (w) => { w.state.failBlob = true; }, (w) => { w.state.mail.failHtmlWith = "x"; }]) { const w = world(); set(w); statuses.add(sentReport(w).email_status); }
+  assert.deepEqual([...statuses].sort(), ["send_outcome_unknown", "sent"], "only three situations exist and two of them are 'sent'");
+});
+check("report: duplicate protection is unchanged - after an HTML send or a confirmed fallback the same run and date is skipped (no further call to the mail service); an unknown outcome remembers nothing, so a deliberate repeat is handled as new", () => {
+  const html = world(); sentReport(html); const n = attempts(html).length; assert.equal(html.call(reportPayload()).email_status, "skipped_duplicate"); assert.equal(html.call(emailPayload()).email_status, "skipped_duplicate"); assert.equal(attempts(html).length, n, "no call to the mail service for a duplicate");
+  const fb = world(); fb.state.failBlob = true; sentReport(fb); const m = attempts(fb).length; assert.equal(fb.call(reportPayload()).email_status, "skipped_duplicate"); assert.equal(attempts(fb).length, m);
+  const unk = world(); unk.state.mail.failHtmlWith = "x"; assert.ok(NO_SEND_CLAIM(sentReport(unk))); assert.equal(unk.state.cache.size, 0, "an unknown outcome is not recorded as sent");
+  unk.state.mail.failHtmlWith = null; const again = unk.call(reportPayload()); assert.equal(again.email_status, "sent"); assert.equal(again.email_format, "html"); assert.equal(unk.call(reportPayload()).email_status, "skipped_duplicate");
+});
+check("report: an unknown outcome is never retried by the web app and the old action stays exactly as it was (plain text only, EMAIL_FAILED on failure, no HTML attempt)", () => {
+  const w = world(); w.state.mail.failHtmlWith = "x"; w.state.mail.failHtmlAfterSend = "y"; const old = w.call(upsertPayload()); assert.equal(old.success, true);
+  const sent = w.call(emailPayload()); assert.equal(sent.email_status, "sent"); assert.equal(sent.email_format, undefined); assert.deepEqual(attempts(w), [false], "the legacy action never sends HTML, so the HTML-only faults cannot touch it");
+  const bad = world(); bad.call(upsertPayload()); bad.state.mail.failWith = "down"; const failed = bad.call(emailPayload()); assert.equal(failed.error, "EMAIL_FAILED"); assert.equal(failed.email_status, "failed"); assert.deepEqual(attempts(bad), [false]);
+});
+check("report: nothing secret leaks when the HTML send fails with an error text that contains the secret - not in the reply, not in the logs", () => {
+  const w = world(); w.state.mail.failHtmlWith = "provider said: " + SECRET; const r = sentReport(w);
+  assert.ok(NO_SEND_CLAIM(r)); assert.ok(!JSON.stringify(r).includes(SECRET)); assert.ok(!w.state.logs.join("\n").includes(SECRET), "the log must hold the redacted text only"); assert.ok(w.state.logs.some((line) => line.includes("[redacted]")));
+});
+check("report: nothing secret in the replies, the logs or the e-mails (including the fallback path), and a reply holds only the known fields", () => {
+  const w = world(); w.state.failBlob = true; const replies = [sentReport(w)]; const x = world(); replies.push(sentReport(x)); const y = world(); replies.push(y.call(reportPayload({ token: "bad" })));
+  for (const world_ of [w, x, y]) { assert.ok(!world_.state.logs.join("\n").includes(SECRET)); assert.ok(!world_.state.mail.sent.some((m) => JSON.stringify(m).includes(SECRET))); }
+  for (const r of replies) { assert.ok(!JSON.stringify(r).includes(SECRET)); assert.ok(Object.keys(r).every((k) => ["success", "action", "sheet_status", "email_status", "email_format", "error", "message", "request_id"].includes(k)), Object.keys(r).join()); }
+});
+check("report: the request-size limit is untouched (20,000 characters): a realistic report fits, an oversized one is refused before anything is parsed", () => {
+  const p = reportPayload(); const size = JSON.stringify(p).length; assert.ok(size < 20000, "the made-up report request is " + size + " characters"); assert.equal(world().call(JSON.stringify(Object.assign(p, { padding: "x".repeat(20000) }))).error, "INVALID_REQUEST");
+  assert.ok(/const MAX_BODY_CHARS = 20000;/.test(readSource()), "MAX_BODY_CHARS must stay 20000");
+});
+check("report: the new action is registered next to the old ones, and an unexpected failure while it runs is reported as a failed sheet action", () => {
+  const s = readSource(); assert.ok(/send_success_report: handleSuccessReport_,/.test(s) && /send_success_email: handleSuccessEmail_,/.test(s));
+  assert.ok(/const SHEET_ACTIONS = \[[^\]]*'send_success_report'/.test(s));
+});
+
+// ---- no duplicate success e-mail after a cache failure (S4-2): the e-mail HAS been sent when the duplicate-protection entry is written. If that write fails, the reply must say so (sent_dedup_failed,
+// success true, no error code) - an error such as INTERNAL_ERROR would make the client repeat the request and send the e-mail again. A failure BEFORE the send is still an error, and nothing was sent.
+const DEDUP_FAILED = (r) => r.success === true && r.email_status === "sent_dedup_failed" && r.sheet_status === "ok" && !("error" in r) && typeof r.message === "string" && r.message.length > 10;
+const SUCCESS_RUNS = { "legacy send_success_email": (w) => { w.call(upsertPayload()); return w.call(emailPayload()); }, "HTML send_success_report": (w) => sentReport(w) };
+
+check("cache: normal recording is unchanged for both success actions - sent, one entry under ok:<run>:<date>, no extra fields, and a repeat of either action is skipped_duplicate without another call to the mail service", () => {
+  for (const [name, run] of Object.entries(SUCCESS_RUNS)) {
+    const w = world(); const r = run(w); assert.equal(r.success, true, name); assert.equal(r.email_status, "sent", name); assert.ok(!("message" in r), name + ": a normal reply carries no message");
+    assert.deepEqual([...w.state.cache.keys()], ["ok:123456789:2026-10-27"], name); assert.equal(w.state.cachePuts, 1, name); assert.deepEqual(w.state.cacheTtl, [21600], name + ": the entry lives for the full six hours"); const calls = w.state.mail.attempts.length;
+    assert.equal(w.call(emailPayload()).email_status, "skipped_duplicate", name); assert.equal(w.call(reportPayload()).email_status, "skipped_duplicate", name); assert.equal(w.state.mail.attempts.length, calls, name + ": no further call to the mail service"); assert.equal(w.state.mail.sent.length, 1, name);
+  }
+});
+check("cache: a confirmed send followed by a FAILING cache write is reported as sent_dedup_failed - success, no error code (so nothing is retried), ONE e-mail, ONE call to the mail service, ONE write attempt - for the legacy and the HTML action", () => {
+  for (const [name, run] of Object.entries(SUCCESS_RUNS)) {
+    const w = world(); w.state.cacheFail.put = "Exception: cache service unavailable"; const r = run(w);
+    assert.ok(DEDUP_FAILED(r), name + ": " + JSON.stringify(r)); assert.notEqual(r.error, "INTERNAL_ERROR", name); assert.equal(w.state.mail.sent.length, 1, name); assert.equal(w.state.mail.attempts.length, 1, name); assert.equal(w.state.cachePuts, 1, name + ": the write is tried once and never repeated");
+    assert.ok(/sent/i.test(r.message) && !/fail|not sent|could not be sent/i.test(r.message.replace("could not be recorded", "")), name + ": the message must say the e-mail was sent: " + r.message);
+    if (name.startsWith("HTML")) { assert.equal(r.email_format, "html"); assert.ok(lastMail(w).htmlBody); } else assert.ok(!("email_format" in r), name);
+  }
+  const fb = world(); fb.state.failBlob = true; fb.state.cacheFail.put = "x"; const r = sentReport(fb); assert.ok(DEDUP_FAILED(r)); assert.equal(r.email_format, "text_fallback", "the pre-send fallback keeps its own label"); assert.deepEqual(fb.state.mail.attempts, [false]);
+});
+check("cache: a genuine failure stays distinguishable - a failed send is EMAIL_FAILED (the cache is never touched), a cache READ failure before the send is INTERNAL_ERROR with nothing sent, and S4-1's send_outcome_unknown is unchanged", () => {
+  const legacy = world(); legacy.call(upsertPayload()); legacy.state.mail.failWith = "down"; legacy.state.cacheFail.put = "x"; const a = legacy.call(emailPayload());
+  assert.equal(a.error, "EMAIL_FAILED"); assert.equal(a.email_status, "failed"); assert.equal(legacy.state.cachePuts, 0, "no entry is written for a send that failed");
+  const html = world(); html.state.failBlob = true; html.state.mail.failWith = "down"; html.state.cacheFail.put = "x"; const b = sentReport(html);
+  assert.equal(b.error, "EMAIL_FAILED"); assert.equal(b.email_status, "failed"); assert.equal(html.state.cachePuts, 0); assert.equal(html.state.mail.sent.length, 0);
+  for (const [name, run] of Object.entries(SUCCESS_RUNS)) { const w = world(); w.state.cacheFail.get = "Exception: cache read failed"; const r = run(w); assert.equal(r.success, false, name); assert.equal(r.error, "INTERNAL_ERROR", name); assert.equal(w.state.mail.attempts.length, 0, name + ": nothing was sent, so a repeat is safe"); }
+  for (const fault of ["failHtmlWith", "failHtmlAfterSend"]) { const w = world(); w.state.mail[fault] = "boom"; w.state.cacheFail.put = "x"; const r = sentReport(w); assert.ok(NO_SEND_CLAIM(r), fault + ": " + JSON.stringify(r)); assert.equal(w.state.cachePuts, 0, fault + ": an unknown outcome writes no entry"); assert.deepEqual(attempts(w), [true], fault); }
+});
+check("cache: neither a secret nor the provider's error text reaches the reply or the log when the duplicate-protection write fails (only a fixed sentence and the error type are logged)", () => {
+  for (const [name, run] of Object.entries(SUCCESS_RUNS)) {
+    const w = world(); w.state.cacheFail.put = "provider said: " + SECRET + " quota detail xyz"; const r = run(w); assert.ok(DEDUP_FAILED(r), name);
+    const logs = w.state.logs.join("\n"); assert.ok(!JSON.stringify(r).includes(SECRET) && !JSON.stringify(r).includes("xyz") && !JSON.stringify(r).includes("provider said"), name + ": reply");
+    assert.ok(!logs.includes(SECRET) && !logs.includes("xyz") && !logs.includes("provider said"), name + ": log: " + logs); assert.ok(logs.includes("duplicate-protection"), name + ": the failure is logged without the provider's text");
+    assert.ok(Object.keys(r).every((k) => ["success", "action", "sheet_status", "email_status", "email_format", "message", "request_id"].includes(k)), Object.keys(r).join());
+  }
+});
+
+// ---- the failure notice after a cache failure (S4-3): the same protection as the success e-mails. The notice HAS been sent when its duplicate-protection entry is written; if that write fails the reply
+// is a success with email_status sent_dedup_failed - an INTERNAL_ERROR would be repeated by the client and the notice would go out again. A failure BEFORE the send is still an error.
+const FAIL_DEDUP = (r, sheet) => r.success === true && r.email_status === "sent_dedup_failed" && r.sheet_status === sheet && !("error" in r) && typeof r.message === "string" && r.message.length > 10;
+
+check("failure notice: normal recording is unchanged - sent, one entry under fail:<run>:<stage> kept for six hours, no extra fields; a repeat for the same run and stage is skipped_duplicate without another call to the mail service; another stage is sent", () => {
+  const w = world(); const r = w.call(failurePayload()); assert.equal(r.success, true); assert.equal(r.email_status, "sent"); assert.ok(!("message" in r) && !("email_format" in r));
+  assert.deepEqual([...w.state.cache.keys()], ["fail:123456789:tests"]); assert.deepEqual(w.state.cacheTtl, [21600], "the entry lives for the full six hours"); const calls = w.state.mail.attempts.length;
+  assert.equal(w.call(failurePayload()).email_status, "skipped_duplicate"); assert.equal(w.state.mail.attempts.length, calls, "no further call to the mail service"); assert.equal(w.call(failurePayload({ stage: "analysis" })).email_status, "sent"); assert.equal(w.state.mail.sent.length, 2);
+});
+check("failure notice: a confirmed send followed by a FAILING cache write is sent_dedup_failed - success, no error code, the request's own sheet status, ONE e-mail, ONE call to the mail service, ONE write attempt, never INTERNAL_ERROR", () => {
+  for (const sheet of ["not_attempted", "ok", "failed", "unconfirmed"]) {
+    const w = world(); w.state.cacheFail.put = "Exception: cache service unavailable"; const r = w.call(failurePayload({ sheet_status: sheet }));
+    assert.ok(FAIL_DEDUP(r, sheet), sheet + ": " + JSON.stringify(r)); assert.equal(w.state.mail.sent.length, 1, sheet); assert.equal(w.state.mail.attempts.length, 1, sheet); assert.equal(w.state.cachePuts, 1, sheet + ": the write is tried once and never repeated");
+    assert.ok(/sent/i.test(r.message) && !/not sent|could not be sent|fail/i.test(r.message), "the message must say the e-mail was sent: " + r.message); assert.ok(/FAILED at stage: tests/.test(lastMail(w).subject), "the notice itself is unchanged");
+  }
+});
+check("failure notice: a genuine failure stays distinguishable - a failed send is EMAIL_FAILED with no cache write tried, a cache READ failure before the send is INTERNAL_ERROR with nothing sent, a missing recipient is NOT_CONFIGURED", () => {
+  const a = world(); a.state.mail.failWith = "down"; a.state.cacheFail.put = "x"; const r = a.call(failurePayload()); assert.equal(r.error, "EMAIL_FAILED"); assert.equal(r.email_status, "failed"); assert.equal(a.state.cachePuts, 0, "no entry for a notice that was not sent"); assert.equal(a.state.mail.sent.length, 0);
+  const b = world(); b.state.cacheFail.get = "Exception: cache read failed"; const r2 = b.call(failurePayload()); assert.equal(r2.success, false); assert.equal(r2.error, "INTERNAL_ERROR"); assert.equal(b.state.mail.attempts.length, 0, "nothing was sent, so a repeat is safe");
+  const c = world({ properties: { EMAIL_TO: "" } }); c.state.cacheFail.put = "x"; const r3 = c.call(failurePayload()); assert.equal(r3.error, "NOT_CONFIGURED"); assert.equal(c.state.cachePuts, 0); assert.equal(c.state.mail.attempts.length, 0);
+});
+check("failure notice: neither a secret nor the provider's error text reaches the reply or the log when the write fails (a fixed sentence and the error type only), and a failure summary that holds the secret is still redacted in the e-mail", () => {
+  const w = world(); w.state.cacheFail.put = "provider said: " + SECRET + " quota detail xyz"; const r = w.call(failurePayload({ error_summary: "boom " + SECRET })); assert.ok(FAIL_DEDUP(r, "not_attempted"), JSON.stringify(r));
+  const logs = w.state.logs.join("\n"); assert.ok(!JSON.stringify(r).includes(SECRET) && !JSON.stringify(r).includes("xyz") && !JSON.stringify(r).includes("provider said"), "reply");
+  assert.ok(!logs.includes(SECRET) && !logs.includes("xyz") && !logs.includes("provider said"), "log: " + logs); assert.ok(logs.includes("duplicate-protection"), "the failure is logged without the provider's text");
+  assert.ok(!JSON.stringify(lastMail(w)).includes(SECRET) && lastMail(w).body.includes("[redacted]"), "the e-mail redacts the secret");
+  assert.ok(Object.keys(r).every((k) => ["success", "action", "sheet_status", "email_status", "message", "request_id"].includes(k)), Object.keys(r).join());
+});
+check("failure notice: authentication and validation still come first even while the cache is failing (wrong token, unknown key, unknown stage: nothing sent, nothing written), and the S4-1 and S4-2 outcomes of the success actions are unchanged", () => {
+  const w = world(); w.state.cacheFail.put = "x"; assert.equal(w.call(failurePayload({ token: "wrong" })).error, "UNAUTHORIZED"); assert.equal(w.call(failurePayload({ extra: 1 })).error, "INVALID_PAYLOAD"); assert.equal(w.call(failurePayload({ stage: "nope" })).error, "INVALID_PAYLOAD");
+  assert.equal(w.state.mail.attempts.length, 0); assert.equal(w.state.cachePuts, 0);
+  for (const [name, run] of Object.entries(SUCCESS_RUNS)) { const v = world(); v.state.cacheFail.put = "x"; assert.ok(DEDUP_FAILED(run(v)), name + ": S4-2"); }
+  const u = world(); u.state.mail.failHtmlWith = "x"; u.state.cacheFail.put = "x"; assert.ok(NO_SEND_CLAIM(sentReport(u)), "S4-1"); assert.equal(u.state.cachePuts, 0);
 });
 
 console.log(`\n${passed}/${passed + failed} Apps Script (Code.gs) checks passed`);
