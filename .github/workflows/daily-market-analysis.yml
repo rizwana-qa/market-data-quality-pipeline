@@ -1,7 +1,6 @@
 name: Daily Market Analysis
 
 # 04:00 UTC is 08:00 AM in Dubai. A run can also be started manually from the Actions tab.
-
 on:
   schedule:
     - cron: "0 4 * * *"
