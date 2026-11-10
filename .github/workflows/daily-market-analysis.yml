@@ -3,6 +3,7 @@ name: Daily Market Analysis
 on:
   schedule:
     - cron: "0 4 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
