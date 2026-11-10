@@ -1,10 +1,8 @@
-
 name: Daily Market Analysis
 
 on:
   schedule:
-    - cron: "15 2 * * *"
-  workflow_dispatch:
+    - cron: "0 4 * * *"
 
 permissions:
   contents: read
