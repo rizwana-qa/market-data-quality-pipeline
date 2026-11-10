@@ -45,7 +45,7 @@ from pathlib import Path
 URL_ENV = "GOOGLE_APPS_SCRIPT_URL"
 TOKEN_ENV = "GOOGLE_APPS_SCRIPT_TOKEN"
 SHEET_HEADERS = ["Run date", "Asset", "Closing price", "Daily return", "30-day volatility", "30-day drawdown", "Correlation", "Validation status", "Report status", "Workflow run ID"]
-WEBHOOK_URL_PATTERN = re.compile(r"https://script.google.com/macros/s/AKfycbxYbick3rynv_jUxRBnhh6Blf2w0oVr6sTsWzop_edvKDbMPdqIm8CYToqeTU0u2-KO/exec")
+WEBHOOK_URL_PATTERN = re.compile(r"https://script\.google\.com/(?:macros|a/macros/[A-Za-z0-9.-]+)/s/[A-Za-z0-9_-]{20,}/exec")
 RUN_URL_PATTERN = re.compile(r"https://github\.com/rizwana-qa/market-data-quality-pipeline/actions/runs/(\d{1,20})")
 RUN_ID_PATTERN = re.compile(r"\d{1,20}")
 STAGE_ORDER = ["checkout", "setup_python", "install_dependencies", "tests", "clear_stale_outputs", "analysis", "validate_outputs", "build_dashboard", "stage_deliverables", "build_payload", "post_to_sheet", "verify_sheet",
