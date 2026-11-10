@@ -560,6 +560,8 @@ def command_build_payload(args, env, today):
 
 
 def _record(folder, action, result):
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
     write_json(_result_path(folder, action), result)
 
 
