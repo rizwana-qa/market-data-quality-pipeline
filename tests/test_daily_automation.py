@@ -595,25 +595,7 @@ NEW_STEP_MAP = {"clear_stale_outputs": "analysis", "build_dashboard": "analysis"
 @R.register("stage mapping: the pipeline order includes the four new steps, the eleven existing step names are sent unchanged, and every name that can reach the web app is one Code.gs already accepts (its STAGES list)")
 def _():
     mapping = getattr(da, "SERVER_STAGE", None); assert mapping is not None, "MISSING FEATURE: daily_automation.py has no SERVER_STAGE mapping yet"
-   assert da.STAGE_ORDER == [
-    "checkout",
-    "setup_python",
-    "install_dependencies",
-    "tests",
-    "clear_stale_outputs",
-    "analysis",
-    "validate_outputs",
-    "build_dashboard",
-    "prepare_pages",
-    "publish_pages",
-    "stage_deliverables",
-    "build_payload",
-    "post_to_sheet",
-    "verify_sheet",
-    "upload_deliverables",
-    "send_success_email",
-    "upload_artifacts",
-], da.STAGE_ORDER
+assert da.STAGE_ORDER == ["checkout", "setup_python", "install_dependencies", "tests", "clear_stale_outputs", "analysis", "validate_outputs", "build_dashboard", "prepare_pages", "publish_pages", "stage_deliverables", "build_payload", "post_to_sheet", "verify_sheet", "upload_deliverables", "send_success_email", "upload_artifacts"], da.STAGE_ORDER
     assert mapping == NEW_STEP_MAP, mapping
     for name in da.STAGE_ORDER: assert mapping.get(name, name) in CODE_GS_STAGES, f"{name} would be sent as {mapping.get(name, name)!r}, which Code.gs does not accept"
     assert all(name not in mapping for name in OLD_STEP_IDS), "an existing step name must not be renamed"
