@@ -618,7 +618,6 @@ OLD_STEP_IDS = [
     "send_success_email",
     "upload_artifacts",
 ]
-
 NEW_STEP_MAP = {
     "clear_stale_outputs": "analysis",
     "build_dashboard": "analysis",
@@ -627,6 +626,7 @@ NEW_STEP_MAP = {
     "publish_pages": "upload_artifacts",
     "upload_deliverables": "upload_artifacts",
 }
+
 
 
 @R.register(
