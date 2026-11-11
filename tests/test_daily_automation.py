@@ -643,24 +643,24 @@ def _():
     )
 
     assert da.STAGE_ORDER == [
-        "checkout",
-        "setup_python",
-        "install_dependencies",
-        "tests",
-        "clear_stale_outputs",
-        "analysis",
-        "validate_outputs",
-        "build_dashboard",
-        "prepare_pages",
-        "publish_pages",
-        "stage_deliverables",
-        "build_payload",
-        "post_to_sheet",
-        "verify_sheet",
-        "upload_deliverables",
-        "send_success_email",
-        "upload_artifacts",
-    ], da.STAGE_ORDER
+    "checkout",
+    "setup_python",
+    "install_dependencies",
+    "tests",
+    "clear_stale_outputs",
+    "analysis",
+    "validate_outputs",
+    "build_dashboard",
+    "stage_deliverables",
+    "prepare_pages",
+    "publish_pages",
+    "build_payload",
+    "post_to_sheet",
+    "verify_sheet",
+    "upload_deliverables",
+    "send_success_email",
+    "upload_artifacts",
+], da.STAGE_ORDER
 
     assert mapping == NEW_STEP_MAP, mapping
 
