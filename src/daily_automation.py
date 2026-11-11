@@ -48,9 +48,34 @@ SHEET_HEADERS = ["Run date", "Asset", "Closing price", "Daily return", "30-day v
 WEBHOOK_URL_PATTERN = re.compile(r"https://script\.google\.com/(?:macros|a/macros/[A-Za-z0-9.-]+)/s/[A-Za-z0-9_-]{20,}/exec")
 RUN_URL_PATTERN = re.compile(r"https://github\.com/rizwana-qa/market-data-quality-pipeline/actions/runs/(\d{1,20})")
 RUN_ID_PATTERN = re.compile(r"\d{1,20}")
-STAGE_ORDER = ["checkout", "setup_python", "install_dependencies", "tests", "clear_stale_outputs", "analysis", "validate_outputs", "build_dashboard", "stage_deliverables", "build_payload", "post_to_sheet", "verify_sheet",
-               "upload_deliverables", "send_success_email", "upload_artifacts"]          # the workflow steps, in pipeline order
-SERVER_STAGE = {"clear_stale_outputs": "analysis", "build_dashboard": "analysis", "stage_deliverables": "validate_outputs", "upload_deliverables": "upload_artifacts"}
+STAGE_ORDER = [
+    "checkout",
+    "setup_python",
+    "install_dependencies",
+    "tests",
+    "clear_stale_outputs",
+    "analysis",
+    "validate_outputs",
+    "build_dashboard",
+    "prepare_pages",
+    "publish_pages",
+    "stage_deliverables",
+    "build_payload",
+    "post_to_sheet",
+    "verify_sheet",
+    "upload_deliverables",
+    "send_success_email",
+    "upload_artifacts",
+]
+
+SERVER_STAGE = {
+    "clear_stale_outputs": "analysis",
+    "build_dashboard": "analysis",
+    "prepare_pages": "validate_outputs",
+    "publish_pages": "upload_artifacts",
+    "stage_deliverables": "validate_outputs",
+    "upload_deliverables": "upload_artifacts",
+}
 # ^ apps_script/Code.gs accepts only the stage names in its own STAGES list. A workflow step it does not know is reported as the nearest stage it does know; the real step name stays in the error summary.
 #   Every other step name is sent unchanged. Nothing is added to Code.gs, so the deployed web app needs no change.
 DELIVERABLE_NAMES = ("report_{day}.md", "report_{day}_data.csv", "dashboard_{day}.html")      # exactly the three files that are staged, for one analysis date
