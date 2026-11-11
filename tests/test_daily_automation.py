@@ -623,6 +623,8 @@ NEW_STEP_MAP = {
     "clear_stale_outputs": "analysis",
     "build_dashboard": "analysis",
     "stage_deliverables": "validate_outputs",
+    "prepare_pages": "validate_outputs",
+    "publish_pages": "upload_artifacts",
     "upload_deliverables": "upload_artifacts",
 }
 
