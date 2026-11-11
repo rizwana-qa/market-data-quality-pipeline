@@ -618,14 +618,7 @@ OLD_STEP_IDS = [
     "send_success_email",
     "upload_artifacts",
 ]
-NEW_STEP_MAP = {
-    "clear_stale_outputs": "analysis",
-    "build_dashboard": "analysis",
-    "stage_deliverables": "validate_outputs",
-    "prepare_pages": "validate_outputs",
-    "publish_pages": "upload_artifacts",
-    "upload_deliverables": "upload_artifacts",
-}
+NEW_STEP_MAP = {"clear_stale_outputs": "analysis", "build_dashboard": "analysis", "stage_deliverables": "validate_outputs", "prepare_pages": "validate_outputs", "publish_pages": "upload_artifacts", "upload_deliverables": "upload_artifacts"}
 
 @R.register(
     "stage mapping: the pipeline order includes the four new steps, "
