@@ -587,39 +587,189 @@ def _():
     assert "GOOGLE_APPS_SCRIPT_URL" in source and "GOOGLE_APPS_SCRIPT_TOKEN" in source, "the existing secret names are used"
     assert "SHEETS_WEBHOOK" not in source, "no second set of secret names"
 
-# ---------------------------------------------------------------- added in Stage 2: the client-side mapping of new workflow steps to the stage names the deployed web app accepts
-CODE_GS_STAGES = re.findall(r"'([a-z_]+)'", re.search(r"^const STAGES = \[(.*?)\];", open(os.path.join(REPO, "apps_script", "Code.gs"), encoding="utf-8").read(), re.M).group(1))
-OLD_STEP_IDS = ["checkout", "setup_python", "install_dependencies", "tests", "analysis", "validate_outputs", "build_payload", "post_to_sheet", "verify_sheet", "send_success_email", "upload_artifacts"]
-NEW_STEP_MAP = {"clear_stale_outputs": "analysis", "build_dashboard": "analysis", "stage_deliverables": "validate_outputs", "upload_deliverables": "upload_artifacts"}
 
-@R.register("stage mapping: the pipeline order includes the four new steps, the eleven existing step names are sent unchanged, and every name that can reach the web app is one Code.gs already accepts (its STAGES list)")
+# ----------------------------------------------------------------
+# Added in Stage 2: client-side mapping of new workflow steps
+# to the stage names accepted by the deployed web app.
+# ----------------------------------------------------------------
+
+CODE_GS_STAGES = re.findall(
+    r"'([a-z_]+)'",
+    re.search(
+        r"^const STAGES = \[(.*?)\];",
+        open(
+            os.path.join(REPO, "apps_script", "Code.gs"),
+            encoding="utf-8",
+        ).read(),
+        re.M,
+    ).group(1),
+)
+
+OLD_STEP_IDS = [
+    "checkout",
+    "setup_python",
+    "install_dependencies",
+    "tests",
+    "analysis",
+    "validate_outputs",
+    "build_payload",
+    "post_to_sheet",
+    "verify_sheet",
+    "send_success_email",
+    "upload_artifacts",
+]
+
+NEW_STEP_MAP = {
+    "clear_stale_outputs": "analysis",
+    "build_dashboard": "analysis",
+    "stage_deliverables": "validate_outputs",
+    "upload_deliverables": "upload_artifacts",
+}
+
+
+@R.register(
+    "stage mapping: the pipeline order includes the four new steps, "
+    "the eleven existing step names are sent unchanged, and every "
+    "name that can reach the web app is one Code.gs already accepts "
+    "(its STAGES list)"
+)
 def _():
-    mapping = getattr(da, "SERVER_STAGE", None); assert mapping is not None, "MISSING FEATURE: daily_automation.py has no SERVER_STAGE mapping yet"
-assert da.STAGE_ORDER == ["checkout", "setup_python", "install_dependencies", "tests", "clear_stale_outputs", "analysis", "validate_outputs", "build_dashboard", "prepare_pages", "publish_pages", "stage_deliverables", "build_payload", "post_to_sheet", "verify_sheet", "upload_deliverables", "send_success_email", "upload_artifacts"], da.STAGE_ORDER
+    mapping = getattr(da, "SERVER_STAGE", None)
+
+    assert mapping is not None, (
+        "MISSING FEATURE: daily_automation.py has no SERVER_STAGE mapping yet"
+    )
+
+    assert da.STAGE_ORDER == [
+        "checkout",
+        "setup_python",
+        "install_dependencies",
+        "tests",
+        "clear_stale_outputs",
+        "analysis",
+        "validate_outputs",
+        "build_dashboard",
+        "prepare_pages",
+        "publish_pages",
+        "stage_deliverables",
+        "build_payload",
+        "post_to_sheet",
+        "verify_sheet",
+        "upload_deliverables",
+        "send_success_email",
+        "upload_artifacts",
+    ], da.STAGE_ORDER
+
     assert mapping == NEW_STEP_MAP, mapping
-    for name in da.STAGE_ORDER: assert mapping.get(name, name) in CODE_GS_STAGES, f"{name} would be sent as {mapping.get(name, name)!r}, which Code.gs does not accept"
-    assert all(name not in mapping for name in OLD_STEP_IDS), "an existing step name must not be renamed"
 
-@R.register("notify-failure for each NEW workflow step: the stage sent is the mapped one that Code.gs accepts, the error summary still names the real step, and the first failed step in pipeline order wins")
+    for name in da.STAGE_ORDER:
+        server_name = mapping.get(name, name)
+
+        assert server_name in CODE_GS_STAGES, (
+            f"{name} would be sent as {server_name!r}, "
+            "which Code.gs does not accept"
+        )
+
+    assert all(name not in mapping for name in OLD_STEP_IDS), (
+        "an existing step name must not be renamed"
+    )
+
+
+@R.register(
+    "notify-failure for each NEW workflow step: the stage sent is "
+    "the mapped one that Code.gs accepts, the error summary still "
+    "names the real step, and the first failed step in pipeline order wins"
+)
 def _():
-    assert getattr(da, "SERVER_STAGE", None), "MISSING FEATURE: daily_automation.py has no SERVER_STAGE mapping yet"
-    for step_id, server_stage in NEW_STEP_MAP.items():
-        assert step_id in da.STAGE_ORDER, f"MISSING FEATURE: {step_id} is not in STAGE_ORDER"; position = da.STAGE_ORDER.index(step_id)
-        outcomes = [f"{n}=success" for n in da.STAGE_ORDER[:position]] + [f"{step_id}=failure"] + [f"{n}=skipped" for n in da.STAGE_ORDER[position + 1:]]
-        model = Model()
-        with served(model) as server:
-            arguments = ["notify-failure", "--dir", new_temp_dir(), "--run-id", RUN_ID, "--run-url", RUN_URL]
-            for outcome in outcomes: arguments += ["--outcome", outcome]
-            code, out, err = run_cli(arguments, env=env_for(server)); assert code == 0, (step_id, out, err)
-            sent = model.mail[0]; assert sent["stage"] == server_stage and sent["stage"] in CODE_GS_STAGES and f"step {step_id} ended" in sent["error_summary"], sent
-    assert da.derive_stage({"clear_stale_outputs": "success", "build_dashboard": "failure", "stage_deliverables": "failure"}) == "build_dashboard"
+    assert getattr(da, "SERVER_STAGE", None), (
+        "MISSING FEATURE: daily_automation.py has no SERVER_STAGE mapping yet"
+    )
 
-@R.register("stage mapping does not weaken validation: names that are not workflow steps - typos and look-alikes of the new steps - are still refused before any request")
+    for step_id, server_stage in NEW_STEP_MAP.items():
+        assert step_id in da.STAGE_ORDER, (
+            f"MISSING FEATURE: {step_id} is not in STAGE_ORDER"
+        )
+
+        position = da.STAGE_ORDER.index(step_id)
+
+        outcomes = (
+            [f"{name}=success" for name in da.STAGE_ORDER[:position]]
+            + [f"{step_id}=failure"]
+            + [f"{name}=skipped" for name in da.STAGE_ORDER[position + 1:]]
+        )
+
+        model = Model()
+
+        with served(model) as server:
+            arguments = [
+                "notify-failure",
+                "--dir",
+                new_temp_dir(),
+                "--run-id",
+                RUN_ID,
+                "--run-url",
+                RUN_URL,
+            ]
+
+            for outcome in outcomes:
+                arguments += ["--outcome", outcome]
+
+            code, out, err = run_cli(
+                arguments,
+                env=env_for(server),
+            )
+
+            assert code == 0, (step_id, out, err)
+
+            sent = model.mail[0]
+
+            assert sent["stage"] == server_stage, sent
+            assert sent["stage"] in CODE_GS_STAGES, sent
+            assert f"step {step_id} ended" in sent["error_summary"], sent
+
+    assert da.derive_stage({
+        "clear_stale_outputs": "success",
+        "build_dashboard": "failure",
+        "stage_deliverables": "failure",
+    }) == "build_dashboard"
+
+
+@R.register(
+    "stage mapping does not weaken validation: names that are not "
+    "workflow steps - typos and look-alikes of the new steps - are "
+    "still refused before any request"
+)
 def _():
     with served(Model()) as server:
-        for bad in ("stage_deliverable", "build_dashboards", "upload_deliverable", "clear_stale_output", "dashboard", "deliverables"):
-            code, out, err = run_cli(["notify-failure", "--dir", new_temp_dir(), "--run-id", RUN_ID, "--run-url", RUN_URL, "--outcome", f"{bad}=failure"], env=env_for(server)); assert code == 1, bad
-        assert server.calls == [], "no request may be made for an unknown step"
+        for bad in (
+            "stage_deliverable",
+            "build_dashboards",
+            "upload_deliverable",
+            "clear_stale_output",
+            "dashboard",
+            "deliverables",
+        ):
+            code, out, err = run_cli(
+                [
+                    "notify-failure",
+                    "--dir",
+                    new_temp_dir(),
+                    "--run-id",
+                    RUN_ID,
+                    "--run-url",
+                    RUN_URL,
+                    "--outcome",
+                    f"{bad}=failure",
+                ],
+                env=env_for(server),
+            )
+
+            assert code == 1, bad
+
+        assert server.calls == [], (
+            "no request may be made for an unknown step"
+        )
+
 
 # ---------------------------------------------------------------- a failure notice the web app SUPPRESSES (skipped_duplicate) is not a delivered email, and must not be reported as one
 # The web app keeps one failure notice per (run id, stage) for up to 6 hours and answers skipped_duplicate for a repeat. Several workflow steps share one stage (build_dashboard, clear_stale_outputs and analysis
