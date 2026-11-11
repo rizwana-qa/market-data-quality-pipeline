@@ -94,6 +94,8 @@ def parse_steps(lines):
             line = "        " + line[8:]
         elif current is None:
             continue
+        elif line.startswith("      #"):
+            continue
         elif line and not line.startswith("        "):
             break
 
@@ -169,14 +171,14 @@ def _():
 
 
 @R.register(
-    "triggers: exactly one daily schedule at 13:00 UTC "
-    "(17:00 Dubai) and manual workflow_dispatch; no other triggers or inputs"
+    "triggers: exactly one daily schedule at 04:00 UTC "
+    "(08:00 Dubai) and manual workflow_dispatch; no other triggers or inputs"
 )
 def _():
     on_block = TEXT.split("\npermissions:")[0]
 
     assert (
-        len(re.findall(r'^\s+- cron: "0 13 \* \* \*"', on_block, re.M))
+        len(re.findall(r'^\s+- cron: "0 4 \* \* \*"', on_block, re.M))
         == 1
     )
     assert on_block.count("cron:") == 1
@@ -210,7 +212,7 @@ def _():
     assert len(re.findall(r"^\s*permissions:", TEXT, re.M)) == 1
     assert "write-all" not in TEXT
     assert "id-token" not in TEXT
-    assert not re.search(r"^\s+[A-Za-z_-]+:\s*(?:write|admin)\s*$", TEXT, re.M)
+    assert not re.search(r"^\s+(?!contents:)[A-Za-z_-]+:\s*(?:write|admin)\s*$", TEXT, re.M)
 
 
 @R.register(

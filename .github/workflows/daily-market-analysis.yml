@@ -1,11 +1,11 @@
 
 name: Daily Market Analysis
 
-# 13:00 UTC is 05:00 PM in Dubai (UTC+4).
+# 04:00 UTC is 08:00 AM in Dubai (UTC+4).
 # A run can also be started manually from the Actions tab.
 on:
   schedule:
-    - cron: "0 13 * * *"
+    - cron: "0 4 * * *"
   workflow_dispatch:
 
 permissions:
@@ -224,13 +224,14 @@ jobs:
 
       - name: Publish dashboard to GitHub Pages
         id: publish_pages
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
           publish_dir: ./pages-site
           keep_files: true
           commit_message: "Publish market dashboard for ${{ steps.validate_outputs.outputs.analysis_date }}"
+        timeout-minutes: 3
 
       - name: Build the sheet payloads
         id: build_payload

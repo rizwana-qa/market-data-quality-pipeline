@@ -31,7 +31,7 @@ def workflow_steps():
 
     for block in re.split(r"\n(?=      - name: )", text.split("    steps:\n", 1)[1]):
         env = dict(re.findall(r"^          ([A-Za-z_]+): (.*)$", block, re.M))
-        run = re.search(r"^        run: \|\n((?:          .*(?:\n|$))+)", block, re.M)
+        run = re.search(r"^        run: \|\n((?:          .*(?:\n|$)|\n)+)", block, re.M)
         script = "\n".join(line[10:] for line in run.group(1).splitlines()) if run else ""
 
         steps.append({
@@ -339,13 +339,19 @@ def _():
         if not step["has_gas_secrets"]:
             continue
 
+        python_commands = [
+            command for command in step["commands"]
+            if re.match(r"python3 -I -S src/daily_automation\.py ", command)
+        ]
+        assert len(python_commands) == 1, (step["id"], python_commands)
+
         command = re.sub(
             r"\$\{?([A-Z_]+)\}?",
             lambda match: {
                 "GITHUB_RUN_ID": RUN_ID,
                 "RUN_URL": RUN_URL,
             }.get(match.group(1), "success"),
-            step["commands"][0],
+            python_commands[0],
         )
 
         tokens = shlex.split(command)

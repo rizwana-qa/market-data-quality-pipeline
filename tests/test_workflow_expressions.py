@@ -9,7 +9,7 @@ PATH = os.path.join(REPO, ".github", "workflows", "daily-market-analysis.yml")
 TEXT = open(PATH, encoding="utf-8", newline="").read(); LINES = TEXT.splitlines()
 R = Runner("workflow expression checks")
 EXPRESSION = re.compile(r"\$\{\{\s*([^{}]*?)\s*\}\}")
-ALLOWED = [re.compile(p) for p in (r"secrets\.(GOOGLE_APPS_SCRIPT_URL|GOOGLE_APPS_SCRIPT_TOKEN)", r"github\.(server_url|repository|run_id|run_attempt)", r"steps\.([a-z_]+)\.outcome", r"steps\.validate_outputs\.outputs\.analysis_date", r"steps\.upload_deliverables\.outputs\.artifact-url")]
+ALLOWED = [re.compile(p) for p in (r"secrets\.(GOOGLE_APPS_SCRIPT_URL|GOOGLE_APPS_SCRIPT_TOKEN|GITHUB_TOKEN)", r"github\.(server_url|repository|run_id|run_attempt)", r"steps\.([a-z_]+)\.outcome", r"steps\.validate_outputs\.outputs\.analysis_date", r"steps\.upload_deliverables\.outputs\.artifact-url")]
 
 def step_blocks():
     return re.split(r"\n(?=      - name: )", TEXT.split("    steps:\n", 1)[1])
@@ -32,21 +32,21 @@ def expression_sites():
         if "${{" in line and not EXPRESSION.search(line): sites.append((number, step_index, section, key, "UNCLOSED"))
     return sites
 
-@R.register("expressions: every ${{ }} is opened and closed once on its line, and is one of the allowed forms (secrets.<the two retained names>, github.<server_url|repository|run_id|run_attempt>, steps.<id>.outcome, steps.validate_outputs.outputs.analysis_date, steps.upload_deliverables.outputs.artifact-url)")
+@R.register("expressions: every ${{ }} is opened and closed once on its line, and is one of the allowed forms (secrets.<the three permitted names>, github.<server_url|repository|run_id|run_attempt>, steps.<id>.outcome, steps.validate_outputs.outputs.analysis_date, steps.upload_deliverables.outputs.artifact-url)")
 def _():
     for number, line in enumerate(LINES, 1):
         stripped = EXPRESSION.sub("", line); assert "${{" not in stripped and "}}" not in stripped, f"line {number}: unbalanced expression: {line.strip()}"
     found = [e for *_rest, e in expression_sites()]; assert found, "no expressions found"
     for expression in found: assert any(p.fullmatch(expression) for p in ALLOWED), f"expression not allowed: {expression!r}"
-    assert {e for e in found if e.startswith("secrets.")} == {"secrets.GOOGLE_APPS_SCRIPT_URL", "secrets.GOOGLE_APPS_SCRIPT_TOKEN"}
+    assert {e for e in found if e.startswith("secrets.")} == {"secrets.GOOGLE_APPS_SCRIPT_URL", "secrets.GOOGLE_APPS_SCRIPT_TOKEN", "secrets.GITHUB_TOKEN"}
 
-@R.register("expressions sit only where GitHub evaluates them: in a step's env values and in the artifact name - never in run scripts, uses, id, name or if")
+@R.register("expressions sit only where GitHub evaluates them: in step env values and with.name, with.github_token or with.commit_message - never in run scripts, uses, id, name or if")
 def _():
     for number, index, section, key, expression in expression_sites():
         assert section in ("env", "with"), f"line {number}: expression {expression!r} in '{section}'"
-        if section == "with": assert key == "name", f"line {number}: expression in with.{key}"
+        if section == "with": assert key in ("name", "github_token", "commit_message"), f"line {number}: expression in with.{key}"
 
-@R.register("step references: every steps.<id>.outcome and steps.<id>.outputs.<name> names a step that exists AND comes earlier in the job (GitHub cannot read a later step); the only outputs read are validate_outputs.analysis_date and upload_deliverables.artifact-url; sixteen steps")
+@R.register("step references: every steps.<id>.outcome and steps.<id>.outputs.<name> names a step that exists AND comes earlier in the job (GitHub cannot read a later step); the only outputs read are validate_outputs.analysis_date and upload_deliverables.artifact-url; eighteen steps")
 def _():
     outputs = set()
     for number, index, section, key, expression in expression_sites():
@@ -55,7 +55,7 @@ def _():
             assert m.group(1) in STEP_IDS, f"line {number}: unknown step {m.group(1)}"; assert STEP_IDS.index(m.group(1)) < index, f"line {number}: step {m.group(1)} is not before step {STEP_IDS[index]}"
             if m.group(2): outputs.add((m.group(1), m.group(2)))
     assert outputs == {("validate_outputs", "analysis_date"), ("upload_deliverables", "artifact-url")}, f"MISSING FEATURE: the staging step must read analysis_date and the e-mail step the artifact-url (found {sorted(outputs)})"
-    assert len(STEP_IDS) == len(set(STEP_IDS)) == 16, STEP_IDS
+    assert len(STEP_IDS) == len(set(STEP_IDS)) == 18, STEP_IDS
 
 @R.register("conditions: the only if: conditions are always() on the artifact upload and failure() on the failure notice (nothing else is conditional)")
 def _():
@@ -67,8 +67,20 @@ def _():
 @R.register("layout: no tabs, two-space indentation everywhere, exactly the expected top-level keys, and no duplicate key in any mapping (top level, job, step, env, with)")
 def _():
     assert "\t" not in TEXT
+    block_indent = None
     for number, line in enumerate(LINES, 1):
-        if line.strip() and not line.lstrip().startswith("#"): assert (len(line) - len(line.lstrip(" "))) % 2 == 0, f"line {number}: odd indentation"
+        indentation = len(line) - len(line.lstrip(" "))
+
+        if block_indent is not None:
+            if not line.strip() or indentation > block_indent:
+                continue
+            block_indent = None
+
+        if line.strip() and not line.lstrip().startswith("#"):
+            assert indentation % 2 == 0, f"line {number}: odd indentation"
+
+        if re.match(r"^ {8}[A-Za-z_-]+:\s*[|>][+-]?\s*(?:#.*)?$", line):
+            block_indent = indentation
     top = re.findall(r"^([A-Za-z_-]+):", TEXT, re.M); assert top == ["name", "on", "permissions", "concurrency", "defaults", "jobs"], top
     job = TEXT.split("    steps:\n")[0].split("jobs:\n", 1)[1]; keys = re.findall(r"^    ([A-Za-z_-]+):", job, re.M); assert keys == ["name", "runs-on", "timeout-minutes", "env"] and len(set(keys)) == len(keys), keys
     for block in step_blocks():
