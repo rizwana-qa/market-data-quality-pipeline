@@ -1,7 +1,7 @@
 
 name: Daily Market Analysis
 
-# 011:00 UTC is 03:00 PM in Dubai.
+# 11:00 UTC is 03:00 PM in Dubai (UTC+4).
 # A run can also be started manually from the Actions tab.
 on:
   schedule:
@@ -91,8 +91,7 @@ jobs:
           python3 src/daily_automation.py stage-deliverables --reports-dir reports --dashboard-dir dashboard_out \
             --out-dir deliverables --date "$ANALYSIS_DATE"
 
-      # Publish the standalone HTML dashboard to GitHub Pages.
-      # The analysis date comes from the existing validation step.
+      # Prepare the standalone HTML dashboard for GitHub Pages.
       - name: Prepare standalone dashboard download for GitHub Pages
         id: prepare_pages
         env:
@@ -301,6 +300,7 @@ jobs:
           GOOGLE_APPS_SCRIPT_URL: ${{ secrets.GOOGLE_APPS_SCRIPT_URL }}
           GOOGLE_APPS_SCRIPT_TOKEN: ${{ secrets.GOOGLE_APPS_SCRIPT_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
           OUTCOME_CHECKOUT: ${{ steps.checkout.outcome }}
           OUTCOME_SETUP_PYTHON: ${{ steps.setup_python.outcome }}
           OUTCOME_INSTALL_DEPENDENCIES: ${{ steps.install_dependencies.outcome }}
@@ -310,14 +310,19 @@ jobs:
           OUTCOME_VALIDATE_OUTPUTS: ${{ steps.validate_outputs.outcome }}
           OUTCOME_BUILD_DASHBOARD: ${{ steps.build_dashboard.outcome }}
           OUTCOME_STAGE_DELIVERABLES: ${{ steps.stage_deliverables.outcome }}
+          OUTCOME_PREPARE_PAGES: ${{ steps.prepare_pages.outcome }}
+          OUTCOME_PUBLISH_PAGES: ${{ steps.publish_pages.outcome }}
           OUTCOME_BUILD_PAYLOAD: ${{ steps.build_payload.outcome }}
           OUTCOME_POST_TO_SHEET: ${{ steps.post_to_sheet.outcome }}
           OUTCOME_VERIFY_SHEET: ${{ steps.verify_sheet.outcome }}
           OUTCOME_UPLOAD_DELIVERABLES: ${{ steps.upload_deliverables.outcome }}
           OUTCOME_SEND_SUCCESS_EMAIL: ${{ steps.send_success_email.outcome }}
           OUTCOME_UPLOAD_ARTIFACTS: ${{ steps.upload_artifacts.outcome }}
+
         timeout-minutes: 8
         run: |
+          mkdir -p automation_out
+
           python3 -I -S src/daily_automation.py notify-failure --dir automation_out \
             --run-id "$GITHUB_RUN_ID" --run-url "$RUN_URL" \
             --outcome "checkout=$OUTCOME_CHECKOUT" \
@@ -329,6 +334,8 @@ jobs:
             --outcome "validate_outputs=$OUTCOME_VALIDATE_OUTPUTS" \
             --outcome "build_dashboard=$OUTCOME_BUILD_DASHBOARD" \
             --outcome "stage_deliverables=$OUTCOME_STAGE_DELIVERABLES" \
+            --outcome "prepare_pages=$OUTCOME_PREPARE_PAGES" \
+            --outcome "publish_pages=$OUTCOME_PUBLISH_PAGES" \
             --outcome "build_payload=$OUTCOME_BUILD_PAYLOAD" \
             --outcome "post_to_sheet=$OUTCOME_POST_TO_SHEET" \
             --outcome "verify_sheet=$OUTCOME_VERIFY_SHEET" \
