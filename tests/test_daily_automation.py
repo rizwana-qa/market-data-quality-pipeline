@@ -627,8 +627,6 @@ NEW_STEP_MAP = {
     "upload_deliverables": "upload_artifacts",
 }
 
-
-
 @R.register(
     "stage mapping: the pipeline order includes the four new steps, "
     "the eleven existing step names are sent unchanged, and every "
