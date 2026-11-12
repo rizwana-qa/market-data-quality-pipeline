@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Daily Market Analysis | Dashboard download</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      box-sizing: border-box;
+      background: #f4f6f9;
+      color: #172033;
+      font: 16px/1.55 Arial, Helvetica, sans-serif;
+    }
+    main {
+      width: min(100%, 560px);
+      box-sizing: border-box;
+      padding: 36px;
+      border: 1px solid #e1e6ee;
+      border-radius: 16px;
+      background: #fff;
+      box-shadow: 0 12px 36px rgba(20, 35, 60, .08);
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 25px;
+    }
+    p {
+      color: #526078;
+    }
+    a {
+      display: inline-block;
+      margin-top: 12px;
+      padding: 13px 20px;
+      border-radius: 8px;
+      background: #173b70;
+      color: #fff;
+      font-weight: 700;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Your market dashboard is ready</h1>
+    <p id="status">
+      Preparing your standalone HTML dashboard download...
+    </p>
+
+    <a id="download"
+       href="./dashboard.html"
+       download="Daily_Market_Analysis.html">
+      Download Dashboard Report
+    </a>
+  </main>
+
+  <script>
+    (async function () {
+      const link = document.getElementById('download');
+      const status = document.getElementById('status');
+
+      try {
+        const response = await fetch('./dashboard.html', {
+          cache: 'no-store'
+        });
+
+        if (!response.ok) {
+          throw new Error('Dashboard retrieval failed.');
+        }
+
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+
+        link.href = objectUrl;
+        link.download = 'Daily_Market_Analysis.html';
+
+        status.textContent =
+          'Your download should start automatically. If it does not, use the button below.';
+
+        link.click();
+
+        window.setTimeout(
+          () => URL.revokeObjectURL(objectUrl),
+          60000
+        );
+
+      } catch (error) {
+        status.textContent =
+          'Automatic download was unavailable. Use the button below to open or save the dashboard.';
+      }
+    })();
+  </script>
+</body>
+</html>
