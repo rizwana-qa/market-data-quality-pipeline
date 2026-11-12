@@ -171,14 +171,14 @@ def _():
 
 
 @R.register(
-    "triggers: exactly one daily schedule at 04:00 UTC "
-    "(08:00 Dubai) and manual workflow_dispatch; no other triggers or inputs"
+    "triggers: exactly one daily schedule at 12:00 UTC "
+    "(04:00 PM Dubai) and manual workflow_dispatch; no other triggers or inputs"
 )
 def _():
     on_block = TEXT.split("\npermissions:")[0]
 
     assert (
-        len(re.findall(r'^\s+- cron: "0 4 \* \* \*"', on_block, re.M))
+        len(re.findall(r'^\s+- cron: "0 12 \* \* \*"', on_block, re.M))
         == 1
     )
     assert on_block.count("cron:") == 1

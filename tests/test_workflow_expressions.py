@@ -98,9 +98,9 @@ def _():
             m = re.search(r"^        run: \|\n((?:          .*\n?)+)", block, re.M); assert m, f"{sid}: run is not a literal block"
             script = m.group(1).rstrip("\n"); assert script.strip() and not script.rstrip().endswith("\\"), f"{sid}: empty script or dangling continuation"
 
-@R.register("trigger: one cron entry with five valid fields (0 4 * * *) and a manual trigger without inputs; the contexts used (github.server_url, repository, run_id, run_attempt) are real context names")
+@R.register("trigger: one cron entry with five valid fields (0 12 * * *) and a manual trigger without inputs; the contexts used (github.server_url, repository, run_id, run_attempt) are real context names")
 def _():
-    crons = re.findall(r'- cron: "([^"]+)"', TEXT); assert crons == ["0 4 * * *"], crons
+    crons = re.findall(r'- cron: "([^"]+)"', TEXT); assert crons == ["0 12 * * *"], crons
     minute, hour, dom, month, dow = crons[0].split(); assert 0 <= int(minute) <= 59 and 0 <= int(hour) <= 23 and (dom, month, dow) == ("*", "*", "*")
     assert re.search(r"^  workflow_dispatch:\s*$", TEXT, re.M) and "inputs:" not in TEXT
 
