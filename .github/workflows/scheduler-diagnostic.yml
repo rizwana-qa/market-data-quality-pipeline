@@ -1,0 +1,25 @@
+
+name: Scheduler Diagnostic Test
+
+on:
+  schedule:
+    - cron: "15 10 * * *"  # 2:15 PM Dubai time (UTC+4)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scheduler-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm scheduled execution
+        run: |
+          echo "SCHEDULER DIAGNOSTIC SUCCESS"
+          echo "Workflow: $GITHUB_WORKFLOW"
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Run ID: $GITHUB_RUN_ID"
+          echo "Triggered at UTC:"
+          date -u
+          echo "Triggered at Dubai time:"
+          TZ=Asia/Dubai date
