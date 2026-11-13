@@ -82,7 +82,7 @@ def _():
         if re.match(r"^ {8}[A-Za-z_-]+:\s*[|>][+-]?\s*(?:#.*)?$", line):
             block_indent = indentation
     top = re.findall(r"^([A-Za-z_-]+):", TEXT, re.M); assert top == ["name", "on", "permissions", "concurrency", "defaults", "jobs"], top
-    job = TEXT.split("    steps:\n")[0].split("jobs:\n", 1)[1]; keys = re.findall(r"^    ([A-Za-z_-]+):", job, re.M); assert keys == ["name", "runs-on", "timeout-minutes", "env"] and len(set(keys)) == len(keys), keys
+    job = TEXT.split("    steps:\n")[0].split("jobs:\n", 1)[1]; keys = re.findall(r"^    ([A-Za-z_-]+):", job, re.M); assert keys == ["name", "if", "runs-on", "timeout-minutes", "env"] and len(set(keys)) == len(keys), keys
     for block in step_blocks():
         keys = re.findall(r"^(?:      - |        )([A-Za-z_-]+):", block, re.M); sid = re.search(r"^        id: (\S+)", block, re.M).group(1)
         assert len(keys) == len(set(keys)), f"{sid}: duplicate key in {keys}"; assert "name" in keys and "id" in keys and ("run" in keys) != ("uses" in keys), (sid, keys)
