@@ -6,13 +6,13 @@ import independent_calc as ind
 
 R = Runner("workflow integration checks")
 check = R.register
-FETCHER_SHA256 = "8f23d9755a81311cce5a5b7598b7dd00645a14a5d8273d0cab8197ddeb95000d"
+FETCHER_SHA256 = "ee4f045d9b4455ce13ed1245e04951dfe2942a35debbaa65cefc77dd838147d9"  # re-pinned deliberately after the approved response-identity and numeric-type hardening (previous baseline: 8f23d9755a81311cce5a5b7598b7dd00645a14a5d8273d0cab8197ddeb95000d)
 cleanup = []
 def temp_dir(): d = new_temp_dir(); cleanup.append(d); return d
 def csv_rows(directory, name):
     return list(csv.DictReader(io.StringIO(read(directory, name))))
 
-@check("fetcher: src/fetch_data.py is byte-identical to the accepted baseline (sha256 8f23d975...)")
+@check("fetcher: src/fetch_data.py is byte-identical to the accepted baseline (sha256 ee4f045d...; re-pinned after the pair-key and numeric-type hardening)")
 def _(): assert hashlib.sha256(open(os.path.join(SRC, "fetch_data.py"), "rb").read()).hexdigest() == FETCHER_SHA256
 @check("dependencies: the only third-party import in any src file is 'requests' (so requirements.txt needs just that)")
 def _():
@@ -38,8 +38,8 @@ def _():
     code, out, err = run_main(REAL, REAL_NOW, real_dir); real_run.update(code=code, out=out, err=err)
     assert code == 0, (code, err[:200]); assert "XBTUSD: fetched 721 candles" in out and "excluded 1 unfinished candle(s) dated 2026-10-27; 720 completed candles remain" in out
     assert "Report written" in out and "Data written" in out
-@check("real replies: exactly two files, named by the last COMPLETED date (2026-10-26), no temporary or backup files left")
-def _(): assert files_in(real_dir) == ["report_2026-10-26.md", "report_2026-10-26_data.csv"], files_in(real_dir)
+@check("real replies: exactly the report, the CSV and the manifest, named by the last COMPLETED date (2026-10-26), no temporary or backup files left")
+def _(): assert files_in(real_dir) == ["report_2026-10-26.md", "report_2026-10-26_data.csv", "report_2026-10-26_manifest.json"], files_in(real_dir)
 @check("real replies: the CSV has 31 consecutive daily rows 2026-09-26 .. 2026-10-26; the first row has no returns; 30 returns per asset")
 def _():
     rows = csv_rows(real_dir, "report_2026-10-26_data.csv")
@@ -138,14 +138,14 @@ def _():
     d = seeded_dir(); bodies, *_ = synthetic_bodies()
     with mock.patch("pathlib.Path.write_text", side_effect=OSError("simulated: no space left")): code, out, err = run_main(bodies, NOW, d)
     assert code == 1 and untouched(d)
-@check("success: a second successful run for the same date replaces both files; nothing else remains")
+@check("success: a second successful run for the same date replaces the report, the CSV and the manifest; nothing else remains")
 def _():
     d = seeded_dir(); bodies, *_ = synthetic_bodies(); code, out, err = run_main(bodies, NOW, d)
-    assert code == 0 and read(d, "report_2026-03-19.md") != SENTINEL_REPORT and read(d, "report_2026-03-19_data.csv").startswith("date,btc_close,eth_close,btc_return,eth_return") and len(files_in(d)) == 2
+    assert code == 0 and read(d, "report_2026-03-19.md") != SENTINEL_REPORT and read(d, "report_2026-03-19_data.csv").startswith("date,btc_close,eth_close,btc_return,eth_return") and len(files_in(d)) == 3
 @check("success: a missing report folder is created")
 def _():
-    d = os.path.join(temp_dir(), "new_reports"); bodies, *_ = synthetic_bodies(); assert run_main(bodies, NOW, d)[0] == 0 and len(files_in(d)) == 2
-@check("safety: file names are built from the date only (pattern report_YYYY-MM-DD.md / _data.csv)")
-def _(): assert len(files_in(real_dir)) == 2 and all(re.fullmatch(r"report_\d{4}-\d{2}-\d{2}(_data\.csv|\.md)", f) for f in files_in(real_dir))
+    d = os.path.join(temp_dir(), "new_reports"); bodies, *_ = synthetic_bodies(); assert run_main(bodies, NOW, d)[0] == 0 and len(files_in(d)) == 3
+@check("safety: file names are built from the date only (pattern report_YYYY-MM-DD.md / _data.csv / _manifest.json)")
+def _(): assert len(files_in(real_dir)) == 3 and all(re.fullmatch(r"report_\d{4}-\d{2}-\d{2}(_data\.csv|_manifest\.json|\.md)", f) for f in files_in(real_dir))
 for d in cleanup: shutil.rmtree(d, ignore_errors=True)
 R.finish()

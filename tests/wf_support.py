@@ -92,3 +92,43 @@ def run_main(bodies, now, report_dir, failing_pair=None):
 def new_temp_dir(): return tempfile.mkdtemp(prefix="wf_")
 def files_in(directory): return sorted(os.listdir(directory)) if os.path.isdir(directory) else []
 def read(directory, name): return open(os.path.join(directory, name), encoding="utf-8", newline="").read()
+
+
+def add_manifest(folder, run_id="123456789", run_attempt=1, fetched_at=None):
+    """TEST SUPPORT: write the manifest that a real run would have written next to a report CSV and Markdown that were made without one (the committed reports).
+
+    It stands in for the producer: the source families are recorded as PASS with a fixture note, the candle family is the ledger recomputed from the CSV, and the hashes are those of the
+    files on disk. Production code never calls this; a real run writes its own manifest through run_workflow.main."""
+    import re as _re
+    import candle_rules, dashboard, run_evidence
+    name = next(n for n in os.listdir(folder) if _re.fullmatch(r"report_\d{4}-\d{2}-\d{2}_data\.csv", n)); day = name[len("report_"):len("report_") + 10]
+    csv_bytes, md_bytes = open(os.path.join(folder, name), "rb").read(), open(os.path.join(folder, f"report_{day}.md"), "rb").read()
+    dataset = dashboard.parse_dataset(csv_bytes.decode("utf-8")); facts = dashboard.read_report_facts(md_bytes.decode("utf-8"))
+    when = fetched_at or datetime.strptime(facts["data_fetched"], "%Y-%m-%d %H:%M:%S UTC").replace(tzinfo=timezone.utc)
+    identity = {"run_id": str(run_id), "run_attempt": run_attempt, "run_context": "ci" if str(run_id).isdigit() else "local"}
+    source = run_evidence.SourceLedger(["BTC", "ETH"])
+    for asset in ("BTC", "ETH"):
+        for rule_id, _field in run_evidence.SOURCE_RULES: source.passed(asset, rule_id, "test fixture")
+    source.alignment([])
+    envelope = run_evidence.build_envelope(identity, when, source.summary(), dataset["candle_ledger"]); dates = dataset["dates"]
+    windows = {"close": {"first": dates[0], "last": dates[-1], "count": len(dates)}, "return": {"first": dates[1], "last": dates[-1], "count": len(dates) - 1}}
+    pairs = [{"pair": p, "asset": a, "expected_key": k, "received_candles": len(dates) + 1, "completed_candles": len(dates), "unfinished_candles": 1, "window_candles": len(dates)}
+             for p, a, k in (("XBTUSD", "BTC", "XXBTZUSD"), ("ETHUSD", "ETH", "XETHZUSD"))]
+    manifest = run_evidence.build_manifest(identity, when, dates[-1], windows, pairs, envelope, [("csv", name, csv_bytes), ("report", f"report_{day}.md", md_bytes)], "https://api.kraken.com/0/public/OHLC")
+    open(os.path.join(folder, run_evidence.MANIFEST_NAME.format(date=day)), "w", encoding="utf-8", newline="\n").write(run_evidence.serialize(manifest))
+    return manifest
+
+
+_committed = {}
+
+
+def committed_reports():
+    """TEST SUPPORT: a private copy of the committed report and CSV (2026-10-27) with the manifest a real run would have written, built once per process.
+
+    The committed reports predate the manifest, and nothing in the repository's reports folder is changed for the tests: they work on this copy."""
+    if "folder" not in _committed:
+        folder = tempfile.mkdtemp(prefix="committed_reports_")
+        for name in os.listdir(os.path.join(REPO, "reports")):
+            if name.startswith("report_2026-10-27"): shutil.copy(os.path.join(REPO, "reports", name), os.path.join(folder, name))
+        add_manifest(folder); _committed["folder"] = folder
+    return _committed["folder"]

@@ -23,6 +23,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import analysis
+import candle_rules
 
 SRC_DIR = Path(__file__).resolve().parent
 DEFAULT_REPORTS_DIR = SRC_DIR.parent / "reports"
@@ -43,8 +44,10 @@ EXPECTED_COLUMNS = [
     "btc_open", "btc_high", "btc_low", "btc_volume", "btc_vwap", "btc_trade_count",
     "eth_open", "eth_high", "eth_low", "eth_volume", "eth_vwap", "eth_trade_count",
 ]
-PRICE_COLUMNS = [1, 2, 5, 6, 7, 9, 11, 12, 13, 15]  # must be finite and above zero
-VOLUME_COLUMNS = [8, 14]  # must be finite and not negative
+PRICE_COLUMNS = [1, 2, 5, 6, 7, 11, 12, 13]  # must be finite and above zero
+VOLUME_COLUMNS = [8, 14, 9, 15]  # volume and VWAP: finite and not negative here; the VWAP rules (candle_rules.py) then judge the VWAP against volume, trades, low and high
+CANDLE_COLUMNS = {"BTC": {"open": 5, "high": 6, "low": 7, "close": 1, "volume": 8, "vwap": 9, "trade_count": 10},
+                  "ETH": {"open": 11, "high": 12, "low": 13, "close": 2, "volume": 14, "vwap": 15, "trade_count": 16}}
 TRADE_COUNT_COLUMNS = [10, 16]  # must be whole numbers, not negative
 WINDOWS = (7, 14, 30)  # daily returns; each needs one more closing price than returns
 RETURN_TOLERANCE = 1e-12  # a stored return must equal close / previous close - 1 to this accuracy
@@ -70,8 +73,8 @@ class DashboardInputError(ValueError):
 
 
 # ---------------------------------------------------------------- reading and checking the CSV
-def read_text_limited(path, limit, label):
-    """Read a UTF-8 text file without ever holding more than limit + 1 bytes: refuse a file over the limit instead of reading or truncating it."""
+def read_bytes_limited(path, limit, label):
+    """Read a file without ever holding more than limit + 1 bytes: refuse a file over the limit instead of reading or truncating it."""
     too_large = DashboardInputError(f"the {label} is larger than the limit of {limit} bytes and will not be read")
     with open(path, "rb") as handle:
         if os.fstat(handle.fileno()).st_size > limit:
@@ -79,10 +82,19 @@ def read_text_limited(path, limit, label):
         data = handle.read(limit + 1)  # one byte more than allowed: the file may have grown since its size was checked
     if len(data) > limit:
         raise too_large
+    return data
+
+
+def decode_text(data, label):
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
         raise DashboardInputError(f"the {label} is not valid UTF-8 text")
+
+
+def read_text_limited(path, limit, label):
+    """Read a UTF-8 text file without ever holding more than limit + 1 bytes: refuse a file over the limit instead of reading or truncating it."""
+    return decode_text(read_bytes_limited(path, limit, label), label)
 
 
 def read_records(csv_text):
@@ -163,7 +175,24 @@ def parse_dataset(csv_text):
             if abs(value - expected) > RETURN_TOLERANCE:
                 raise DashboardInputError(f"row {number}: {EXPECTED_COLUMNS[column]} {row[column]} does not equal close / previous close - 1 ({expected!r})")
             returns[asset].append(value)
-    return {"rows": body, "dates": dates, "closes": closes, "returns": returns}
+    ledger = _judge_candles(body, dates)
+    return {"rows": body, "dates": dates, "closes": closes, "returns": returns, "candle_ledger": ledger.summary()}
+
+
+def csv_candle_windows(body, dates):
+    """{asset: [(date, candle dict)]} for every row of an already checked CSV body, with the values as the producer had them (float and int)."""
+    return {asset: [(dates[index], {field: (int(row[column]) if field == "trade_count" else float(row[column])) for field, column in columns.items()})
+                    for index, row in enumerate(body)] for asset, columns in CANDLE_COLUMNS.items()}
+
+
+def _judge_candles(body, dates):
+    """Judge every candle of the CSV with the shared candle rules (the same ones run_workflow applies before writing). Raises on the first FAIL or INCONCLUSIVE result."""
+    ledger, ordered = candle_rules.evaluate_window(csv_candle_windows(body, dates), where_of=lambda asset, date: f"{asset} {date}")
+    for found in ordered:
+        if found["outcome"] in (candle_rules.FAIL, candle_rules.INCONCLUSIVE):
+            prefix = f"row {dates.index(found['date']) + 1}: " if found["date"] in dates else ""
+            raise DashboardInputError(prefix + found["message"])
+    return ledger
 
 
 # ---------------------------------------------------------------- metrics (the existing analysis.py definitions, applied to a window)
@@ -418,12 +447,19 @@ def _remove_quietly(path):
         pass
 
 
-def generate(reports_dir, generated_at=None, out_dir=None):
-    """Write dashboard_<date>.html for the newest CSV. Never overwrites an existing file. Returns the path written."""
+def generate(reports_dir, generated_at=None, out_dir=None, date_text=None):
+    """Write dashboard_<date>.html for the newest CSV, or for the CSV of `date_text` when the caller gives the analysis date. Never overwrites an existing file. Returns the path written."""
     reports_dir = Path(reports_dir)
     if not reports_dir.is_dir():
         raise DashboardInputError(f"the reports folder does not exist: {reports_dir}")
-    csv_path, csv_date = find_latest_csv(reports_dir)
+    if date_text is None:
+        csv_path, csv_date = find_latest_csv(reports_dir)
+    else:
+        if DATE_TEXT.match(date_text) is None:
+            raise DashboardInputError(f"the date {date_text!r} is not written as YYYY-MM-DD")
+        csv_path, csv_date = Path(reports_dir) / f"report_{date_text}_data.csv", date_text
+        if not csv_path.is_file():
+            raise DashboardInputError(f"{csv_path.name} was not found in {reports_dir}")
     dataset = parse_dataset(read_text_limited(csv_path, MAX_CSV_BYTES, "CSV file"))
     if dataset["dates"][-1] != csv_date:
         raise DashboardInputError(f"the file name says {csv_date} but the last date in the CSV is {dataset['dates'][-1]}")
@@ -465,9 +501,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Build the HTML dashboard from the newest report CSV.")
     parser.add_argument("--reports-dir", default=str(DEFAULT_REPORTS_DIR), help="folder holding report_<date>_data.csv and report_<date>.md")
     parser.add_argument("--out-dir", default=None, help="folder for the dashboard (default: the reports folder)")
+    parser.add_argument("--date", default=None, help="the analysis date (YYYY-MM-DD) whose CSV to use, passed down by the workflow; without it the newest CSV is used")
     arguments = parser.parse_args(argv)
     try:
-        path = generate(arguments.reports_dir, out_dir=arguments.out_dir)
+        path = generate(arguments.reports_dir, out_dir=arguments.out_dir, date_text=arguments.date)
     except (DashboardInputError, OSError) as error:
         print(f"ERROR: {error}. No dashboard was written.", file=sys.stderr)
         return 1

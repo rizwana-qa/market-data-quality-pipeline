@@ -3,14 +3,16 @@ The web app is imitated by a small local HTTP server that behaves like Google's:
 import contextlib, csv, http.server, io, json, os, re, shutil, socketserver, statistics, sys, threading
 from datetime import date
 
-from wf_support import Runner, raises, REPO, load, new_temp_dir
+from wf_support import Runner, raises, REPO, load, new_temp_dir, committed_reports, add_manifest
+from datetime import datetime as _datetime, timedelta as _timedelta, timezone as _timezone
 
 da = load("daily_automation")
-REAL_REPORTS = os.path.join(REPO, "reports")
+REAL_REPORTS = committed_reports()
 TOKEN = "unit-test-token-0123456789abcdef"            # a made-up test value, never a real secret
 HEADERS = ["Run date", "Asset", "Closing price", "Daily return", "30-day volatility", "30-day drawdown", "Correlation", "Validation status", "Report status", "Workflow run ID"]
 RUN_ID, RUN_URL = "123456789", "https://github.com/rizwana-qa/market-data-quality-pipeline/actions/runs/123456789"
 TODAY = date(2026, 10, 28)                                # the day after the committed 2026-10-27 report
+NOW = _datetime(2026, 10, 28, 7, 0, 0, tzinfo=_timezone.utc)   # a few minutes after the committed report's own fetch time (2026-10-28 06:56:33 UTC): the artifacts are fresh
 R = Runner("daily automation checks")
 
 # ---------------------------------------------------------------- helpers
@@ -48,7 +50,7 @@ PROPERTY_NAMES = ["SPREADSHEET_ID", "SHEET_NAME", "SHARED_SECRET", "EMAIL_TO", "
 def self_reply(**changes):
     """What the updated Code.gs answers to self_check when everything is in order."""
     reply = {"success": True, "action": "self_check", "sheet_status": "not_attempted", "email_status": "not_attempted", "request_id": "r-9", "properties": {name: True for name in PROPERTY_NAMES},
-             "spreadsheet_found": True, "sheet_found": True, "sheet_name_matches": True, "headers_ok": True, "email_valid": True}
+             "spreadsheet_found": True, "sheet_found": True, "sheet_name_matches": True, "headers_ok": True, "email_valid": True, "report_evidence_supported": True}
     reply.update(changes); return reply
 def failing_reply(**changes): return self_reply(**dict({"success": False, "error": "NOT_CONFIGURED"}, **changes))   # what Code.gs answers when something is not in order
 def missing_property(name): return {n: n != name for n in PROPERTY_NAMES}
@@ -133,7 +135,8 @@ def env_for(server, **extra):
 
 def prepared_dir(run_id=RUN_ID):
     reports = fresh_reports(); out = new_temp_dir()
-    assert run_cli(["build-payload", "--reports-dir", reports, "--out-dir", out, "--run-id", run_id, "--run-url", RUN_URL], now=TODAY)[0] == 0
+    if run_id != RUN_ID: add_manifest(reports, run_id=run_id)          # the manifest must belong to the run whose payloads are built
+    assert run_cli(["build-payload", "--reports-dir", reports, "--out-dir", out, "--run-id", run_id, "--run-attempt", "1", "--date", "2026-10-27", "--run-url", RUN_URL], now=NOW)[0] == 0
     return out
 
 def read_json(folder, name): return json.load(open(os.path.join(folder, name), encoding="utf-8"))
@@ -141,7 +144,7 @@ def read_json(folder, name): return json.load(open(os.path.join(folder, name), e
 # ================================================================ validation of the generated outputs
 @R.register("validate: the committed 2026-10-27 report and CSV pass when run on 2026-10-28 and the analysis date is returned")
 def _():
-    outputs = da.validate_outputs(REAL_REPORTS, today=TODAY); assert outputs["date"] == "2026-10-27", outputs["date"]
+    outputs = da.validate_outputs(REAL_REPORTS, NOW); assert outputs["date"] == "2026-10-27", outputs["date"]
 
 @R.register("validate: reuses the existing parsing/comparison code (dashboard.parse_dataset, check_against_report), not a copy of it")
 def _():
@@ -149,51 +152,52 @@ def _():
     for needle in ("parse_dataset", "check_against_report", "window_metrics"): assert needle in source, needle
     assert "def pearson" not in source and "def simple_returns" not in source and "stdev(" not in source, "business logic copied into the new module"
 
-@R.register("validate: stale outputs (the newest files are not for the last completed UTC day) are refused")
+@R.register("validate: stale outputs (the manifest's own fetch time is more than six hours before the check, or in the future) are refused")
 def _():
-    raises(da.AutomationError, lambda: da.validate_outputs(REAL_REPORTS, today=date(2026, 10, 29)), "2026-10-28")
-    raises(da.AutomationError, lambda: da.validate_outputs(REAL_REPORTS, today=date(2026, 10, 27)), "2026-10-26")
+    raises(da.AutomationError, lambda: da.validate_outputs(REAL_REPORTS, NOW + _timedelta(hours=7)), "stale")
+    raises(da.AutomationError, lambda: da.validate_outputs(REAL_REPORTS, NOW - _timedelta(days=1)), "future")
 
 @R.register("validate: older reports in the folder are ignored; the files of the expected day are the ones checked")
 def _():
-    folder = fresh_reports(extra={"report_2026-10-26.md": b"old", "report_2026-10-26_data.csv": b"old"}); assert da.validate_outputs(folder, today=TODAY)["date"] == "2026-10-27"
+    folder = fresh_reports(extra={"report_2026-10-26.md": b"old", "report_2026-10-26_data.csv": b"old"}); assert da.validate_outputs(folder, NOW)["date"] == "2026-10-27"
 
 @R.register("validate: a missing report, a missing CSV and an empty folder are refused")
 def _():
     for remove in (["report_2026-10-27.md"], ["report_2026-10-27_data.csv"], ["report_2026-10-27.md", "report_2026-10-27_data.csv"]):
-        raises(da.AutomationError, lambda: da.validate_outputs(fresh_reports(remove=remove), today=TODAY), "report_2026-10-27")
-    raises(da.AutomationError, lambda: da.validate_outputs(new_temp_dir(), today=TODAY), "report_2026-10-27")
-    raises(da.AutomationError, lambda: da.validate_outputs(os.path.join(new_temp_dir(), "missing"), today=TODAY), "report")
+        raises(da.AutomationError, lambda: da.validate_outputs(fresh_reports(remove=remove), NOW), "report_2026-10-27")
+    raises(da.AutomationError, lambda: da.validate_outputs(new_temp_dir(), NOW), "manifest")
+    raises(da.AutomationError, lambda: da.validate_outputs(os.path.join(new_temp_dir(), "missing"), NOW), "report")
 
 @R.register("validate: a CSV that fails the 17-column validation (altered close, wrong header, truncated, non-UTF-8, oversized) is refused")
 def _():
     def alter(name, text): return text.replace("84444.2,2688.02", "84444.2,2699.02", 1) if name.endswith(".csv") else text
-    raises(da.AutomationError, lambda: da.validate_outputs(fresh_reports(edit=alter), today=TODAY), "")
-    raises(da.AutomationError, lambda: da.validate_outputs(fresh_reports(edit=lambda n, t: t.replace("eth_vwap", "eth_vw") if n.endswith(".csv") else t), today=TODAY), "header")
-    raises(da.AutomationError, lambda: da.validate_outputs(fresh_reports(edit=lambda n, t: "\n".join(t.splitlines()[:5]) + "\n" if n.endswith(".csv") else t), today=TODAY), "")
-    folder = fresh_reports(); open(os.path.join(folder, "report_2026-10-27_data.csv"), "wb").write(b"date\xff\xfe,x\n"); raises(da.AutomationError, lambda: da.validate_outputs(folder, today=TODAY), "")
-    folder = fresh_reports(); open(os.path.join(folder, "report_2026-10-27_data.csv"), "wb").write(b"x" * (300 * 1024)); raises(da.AutomationError, lambda: da.validate_outputs(folder, today=TODAY), "")
+    raises(da.AutomationError, lambda: da.validate_outputs(fresh_reports(edit=alter), NOW), "")
+    raises(da.AutomationError, lambda: da.validate_outputs(fresh_reports(edit=lambda n, t: t.replace("eth_vwap", "eth_vw") if n.endswith(".csv") else t), NOW), "header")
+    raises(da.AutomationError, lambda: da.validate_outputs(fresh_reports(edit=lambda n, t: "\n".join(t.splitlines()[:5]) + "\n" if n.endswith(".csv") else t), NOW), "")
+    folder = fresh_reports(); open(os.path.join(folder, "report_2026-10-27_data.csv"), "wb").write(b"date\xff\xfe,x\n"); raises(da.AutomationError, lambda: da.validate_outputs(folder, NOW), "")
+    folder = fresh_reports(); open(os.path.join(folder, "report_2026-10-27_data.csv"), "wb").write(b"x" * (300 * 1024)); raises(da.AutomationError, lambda: da.validate_outputs(folder, NOW), "")
 
 @R.register("validate: a report that disagrees with the CSV (changed correlation, changed window, missing rule label) is refused")
 def _():
     for old, new in (("0.928089", "0.928090"), ("2026-09-28 to 2026-10-27", "2026-09-27 to 2026-10-26"), ("strong positive", "weak positive")):
-        raises(da.AutomationError, lambda: da.validate_outputs(fresh_reports(edit=lambda n, t: t.replace(old, new) if n.endswith(".md") else t), today=TODAY), "")
+        raises(da.AutomationError, lambda: da.validate_outputs(fresh_reports(edit=lambda n, t: t.replace(old, new) if n.endswith(".md") else t), NOW), "")
 
 @R.register("validate: the CSV's last date must be the date in the file names")
 def _():
-    folder = fresh_reports(); shutil.copy(os.path.join(folder, "report_2026-10-27.md"), os.path.join(folder, "report_2026-10-28.md")); shutil.copy(os.path.join(folder, "report_2026-10-27_data.csv"), os.path.join(folder, "report_2026-10-28_data.csv"))
-    raises(da.AutomationError, lambda: da.validate_outputs(folder, today=date(2026, 10, 29)), "2026-10-28")
+    folder = fresh_reports()
+    for suffix in (".md", "_data.csv", "_manifest.json"): os.rename(os.path.join(folder, f"report_2026-10-27{suffix}"), os.path.join(folder, f"report_2026-10-28{suffix}"))
+    raises(da.AutomationError, lambda: da.validate_outputs(folder, NOW), "2026-10-28")
 
 # ================================================================ payload mapping
 @R.register("payload: one row per asset with exactly the ten headings in the agreed order; BTC then ETH")
 def _():
-    rows = da.build_rows(da.validate_outputs(REAL_REPORTS, today=TODAY), RUN_ID); assert [r["Asset"] for r in rows] == ["BTC", "ETH"]
+    rows = da.build_rows(da.validate_outputs(REAL_REPORTS, NOW), RUN_ID); assert [r["Asset"] for r in rows] == ["BTC", "ETH"]
     for row in rows: assert list(row) == HEADERS, list(row)
     assert da.SHEET_HEADERS == HEADERS
 
 @R.register("payload: values equal an independent calculation from the CSV (close, daily return as a fraction, sample stdev not annualised, negative drawdown fraction, same correlation on both rows)")
 def _():
-    s = real_series(); rows = da.build_rows(da.validate_outputs(REAL_REPORTS, today=TODAY), RUN_ID); expected_corr = statistics.correlation(s["BTC_ret"][-30:], s["ETH_ret"][-30:])
+    s = real_series(); rows = da.build_rows(da.validate_outputs(REAL_REPORTS, NOW), RUN_ID); expected_corr = statistics.correlation(s["BTC_ret"][-30:], s["ETH_ret"][-30:])
     for row, asset in zip(rows, ("BTC", "ETH")):
         ret = s[asset + "_ret"][-30:]
         assert row["Run date"] == "2026-10-27" and row["Workflow run ID"] == RUN_ID
@@ -207,12 +211,12 @@ def _():
 
 @R.register("payload: figures also agree with the Markdown report (correlation 0.928089, BTC drawdown -7.52%, ETH -14.89%)")
 def _():
-    rows = da.build_rows(da.validate_outputs(REAL_REPORTS, today=TODAY), RUN_ID)
+    rows = da.build_rows(da.validate_outputs(REAL_REPORTS, NOW), RUN_ID)
     assert round(rows[0]["Correlation"], 6) == 0.928089 and round(rows[0]["30-day drawdown"], 4) == -0.0752 and round(rows[1]["30-day drawdown"], 4) == -0.1489
 
 @R.register("payload: the three request bodies are built once, contain no token, and are strict JSON (no NaN)")
 def _():
-    outputs = da.validate_outputs(REAL_REPORTS, today=TODAY); payloads = da.build_payloads(outputs, RUN_ID, RUN_URL)
+    outputs = da.validate_outputs(REAL_REPORTS, NOW); payloads = da.build_payloads(outputs, RUN_ID, RUN_URL)
     assert set(payloads) == {"upsert_analysis", "verify_analysis", "send_success_email"}
     for action, body in payloads.items():
         assert body["action"] == action and body["analysis_date"] == "2026-10-27" and "token" not in body; text = json.dumps(body, allow_nan=False)
@@ -225,7 +229,7 @@ def _():
 
 @R.register("payload: observations are capped in number (8) and length (400 characters) before they are sent")
 def _():
-    outputs, dashboard = da.validate_outputs(REAL_REPORTS, today=TODAY), da._dashboard(); original = dashboard.window_insights
+    outputs, dashboard = da.validate_outputs(REAL_REPORTS, NOW), da._dashboard(); original = dashboard.window_insights
     dashboard.window_insights = lambda dataset, k: ["x" * 1000] * 12
     try: observations = da.build_payloads(outputs, RUN_ID, RUN_URL)["send_success_email"]["summary"]["observations"]
     finally: dashboard.window_insights = original
@@ -233,32 +237,32 @@ def _():
 
 @R.register("payload: a run id that is not digits and a run URL that is not this repository's run page are refused")
 def _():
-    outputs = da.validate_outputs(REAL_REPORTS, today=TODAY)
+    outputs = da.validate_outputs(REAL_REPORTS, NOW)
     for bad in ("", "abc", "12 3", "1;2", "-5", "1" * 25): raises(da.AutomationError, lambda: da.build_payloads(outputs, bad, RUN_URL), "run id")
     for bad in ("https://evil.example/x", RUN_URL.replace("https", "http"), RUN_URL + "/../x", RUN_URL.replace("rizwana-qa", "other"), RUN_URL + "?a=1", ""): raises(da.AutomationError, lambda: da.build_payloads(outputs, RUN_ID, bad), "run URL")
 
 @R.register("payload: a constant series (correlation undefined) cannot be written as a row and is refused with a clear reason")
 def _():
-    outputs = da.validate_outputs(REAL_REPORTS, today=TODAY); outputs["metrics"] = dict(outputs["metrics"], correlation=None)
+    outputs = da.validate_outputs(REAL_REPORTS, NOW); outputs["metrics"] = dict(outputs["metrics"], correlation=None)
     raises(da.AutomationError, lambda: da.build_rows(outputs, RUN_ID), "correlation")
 
 @R.register("cli build-payload: writes the JSON files (the three original bodies and, since Stage 4, the success-report body), exits 0, and no file or output contains a token or webhook URL")
 def _():
-    reports, out = fresh_reports(), new_temp_dir(); code, stdout, stderr = run_cli(["build-payload", "--reports-dir", reports, "--out-dir", out, "--run-id", RUN_ID, "--run-url", RUN_URL], env={"GOOGLE_APPS_SCRIPT_TOKEN": TOKEN, "GOOGLE_APPS_SCRIPT_URL": "https://script.google.com/macros/s/AKfycbzSECRETDEPLOYMENT/exec"}, now=TODAY)
-    assert code == 0, (stdout, stderr); assert sorted(os.listdir(out)) == ["send_success_email.json", "send_success_report.json", "upsert_analysis.json", "verify_analysis.json"]
+    reports, out = fresh_reports(), new_temp_dir(); code, stdout, stderr = run_cli(["build-payload", "--reports-dir", reports, "--out-dir", out, "--run-id", RUN_ID, "--run-attempt", "1", "--date", "2026-10-27", "--run-url", RUN_URL], env={"GOOGLE_APPS_SCRIPT_TOKEN": TOKEN, "GOOGLE_APPS_SCRIPT_URL": "https://script.google.com/macros/s/AKfycbzSECRETDEPLOYMENT/exec"}, now=NOW)
+    assert code == 0, (stdout, stderr); assert sorted(os.listdir(out)) == ["run_context.json", "send_success_email.json", "send_success_report.json", "upsert_analysis.json", "verify_analysis.json"]
     blob = stdout + stderr + "".join(open(os.path.join(out, f), encoding="utf-8").read() for f in os.listdir(out)); assert TOKEN not in blob and "AKfycbz" not in blob
 
 @R.register("cli validate: exit 0 with a one-line summary for good outputs; exit 1 with the reason on stderr for stale or broken outputs")
 def _():
-    code, out, err = run_cli(["validate", "--reports-dir", fresh_reports()], now=TODAY); assert code == 0 and "2026-10-27" in out and "PASSED" in out, (out, err)
-    code, out, err = run_cli(["validate", "--reports-dir", fresh_reports()], now=date(2026, 10, 30)); assert code == 1 and "2026-10-29" in err, (out, err)
-    code, out, err = run_cli(["validate", "--reports-dir", fresh_reports(remove=["report_2026-10-27.md"])], now=TODAY); assert code == 1 and "report_2026-10-27.md" in err
+    code, out, err = run_cli(["validate", "--reports-dir", fresh_reports()], now=NOW); assert code == 0 and "2026-10-27" in out and "PASSED" in out, (out, err)
+    code, out, err = run_cli(["validate", "--reports-dir", fresh_reports()], now=NOW + _timedelta(hours=7)); assert code == 1 and "stale" in err, (out, err)
+    code, out, err = run_cli(["validate", "--reports-dir", fresh_reports(remove=["report_2026-10-27.md"])], now=NOW); assert code == 1 and "report_2026-10-27.md" in err
 
 # ================================================================ posting: transport behaviour
 @R.register("post: the token travels in the JSON body only; the redirect is followed with a body-less GET; the parsed JSON is returned")
 def _():
     with served(Model()) as server:
-        response, attempts = da.post_action(server.url, {"action": "upsert_analysis", "analysis_date": "2026-10-27", "rows": da.build_rows(da.validate_outputs(REAL_REPORTS, today=TODAY), RUN_ID)}, TOKEN)
+        response, attempts = da.post_action(server.url, {"action": "upsert_analysis", "analysis_date": "2026-10-27", "rows": da.build_rows(da.validate_outputs(REAL_REPORTS, NOW), RUN_ID)}, TOKEN)
         assert response["success"] is True and attempts == 1; post = server.posts()[0]; assert json.loads(post["body"])["token"] == TOKEN
         assert "authorization" not in {k.lower() for k in post["headers"]} and post["headers"]["Content-Type"].startswith("application/json"), post["headers"]
         gets = [c for c in server.calls if c["method"] == "GET"]; assert len(gets) == 1 and gets[0]["body"] == b"" and TOKEN not in json.dumps(gets[0]["headers"]) and TOKEN not in gets[0]["path"]
@@ -417,7 +421,7 @@ def _():
 def _():
     with served(lambda i, p: ("http", 500, b"down")) as server:
         out_dir = prepared_dir(); code, out, err = run_cli(["post", "--action", "upsert_analysis", "--dir", out_dir], env=env_for(server)); assert code == 1 and len(server.posts()) == 3 and TOKEN not in out + err
-        result = read_json(out_dir, "upsert_analysis_result.json"); assert result["success"] is False and result["sheet_status"] == "unconfirmed" and result["attempts"] == 3
+        result = read_json(out_dir, "upsert_analysis_result.json"); assert result["success"] is False and result["sheet_status"] == "not_attempted" and result["attempts"] == 3     # the compatibility preflight (the first request) could not be answered, so the sheet was never touched
 
 @R.register("result files hold only whitelisted, length-limited fields (a hostile server cannot plant long text or unknown keys)")
 def _():
@@ -626,6 +630,7 @@ NEW_STEP_MAP = {
     "publish_pages": "upload_artifacts",
     "stage_deliverables": "validate_outputs",
     "upload_deliverables": "upload_artifacts",
+    "summarize_run": "upload_artifacts",          # the run-status step: Code.gs knows no such stage, so it is reported as the nearest stage it does know
 }
 @R.register(
     "stage mapping: the pipeline order includes the four new steps, "
@@ -657,6 +662,7 @@ def _():
     "verify_sheet",
     "upload_deliverables",
     "send_success_email",
+    "summarize_run",
     "upload_artifacts",
 ], da.STAGE_ORDER
 
@@ -902,14 +908,14 @@ def lines_that_command(text): return [line for line in text.splitlines() if line
 @R.register("report: the 'post' command knows the new action next to the three old ones, and the 'send_success_email' action and its payload are not changed")
 def _():
     assert da.POST_ACTIONS == ["upsert_analysis", "verify_analysis", "send_success_email", "send_success_report"], da.POST_ACTIONS
-    assert set(da.build_payloads(da.validate_outputs(REAL_REPORTS, today=TODAY), RUN_ID, RUN_URL)) == {"upsert_analysis", "verify_analysis", "send_success_email"}, "build_payloads must still return only the three existing bodies"
+    assert set(da.build_payloads(da.validate_outputs(REAL_REPORTS, NOW), RUN_ID, RUN_URL)) == {"upsert_analysis", "verify_analysis", "send_success_email"}, "build_payloads must still return only the three existing bodies"
 
 @R.register("report build-payload: writes the report request as a fourth file - the old three bodies plus the report, no token, no artifact link yet, strict JSON, comfortably inside the web app's 20,000-character limit")
 def _():
-    out = prepared_dir(); assert sorted(os.listdir(out)) == ["send_success_email.json", "send_success_report.json", "upsert_analysis.json", "verify_analysis.json"], sorted(os.listdir(out))
+    out = prepared_dir(); assert sorted(os.listdir(out)) == ["run_context.json", "send_success_email.json", "send_success_report.json", "upsert_analysis.json", "verify_analysis.json"], sorted(os.listdir(out))
     body, email = read_json(out, "send_success_report.json"), read_json(out, "send_success_email.json")
     assert body["action"] == "send_success_report" and set(body) == set(email) | {"report"} and all(body[key] == email[key] for key in email if key != "action") and "token" not in body and "artifact_url" not in body and "sheet_update" not in body
-    assert set(body["report"]) == {"meta", "assets", "pair", "coverage", "charts"} and len(body["report"]["charts"]) == 3 and len(body["report"]["coverage"]) == 17
+    assert set(body["report"]) == {"meta", "assets", "pair", "coverage", "charts", "comparison", "validation"} and len(body["report"]["charts"]) == 3 and len(body["report"]["coverage"]) == 17
     text = open(os.path.join(out, "send_success_report.json"), encoding="utf-8").read(); assert len(json.dumps(body)) + 400 < 19000, len(json.dumps(body)); assert "NaN" not in text and "Infinity" not in text
 
 @R.register("report build-payload: the generation time stamp is the real UTC time in the report's own format (replaceable in tests)")
@@ -925,9 +931,9 @@ def _():
     old = da.build_report_payload
     def broken(*args, **kwargs): raise da.AutomationError("the charts could not be drawn: " + TOKEN)
     da.build_report_payload = broken
-    try: reports, out = fresh_reports(), new_temp_dir(); code, stdout, stderr = run_cli(["build-payload", "--reports-dir", reports, "--out-dir", out, "--run-id", RUN_ID, "--run-url", RUN_URL], env={"GOOGLE_APPS_SCRIPT_TOKEN": TOKEN}, now=TODAY)
+    try: reports, out = fresh_reports(), new_temp_dir(); code, stdout, stderr = run_cli(["build-payload", "--reports-dir", reports, "--out-dir", out, "--run-id", RUN_ID, "--run-attempt", "1", "--date", "2026-10-27", "--run-url", RUN_URL], env={"GOOGLE_APPS_SCRIPT_TOKEN": TOKEN}, now=NOW)
     finally: da.build_report_payload = old
-    assert code == 0 and sorted(os.listdir(out)) == ["send_success_email.json", "upsert_analysis.json", "verify_analysis.json"], (code, stdout, stderr)
+    assert code == 0 and sorted(os.listdir(out)) == ["run_context.json", "send_success_email.json", "upsert_analysis.json", "verify_analysis.json"], (code, stdout, stderr)
     assert "WARNING" in stderr and "HTML success report" in stderr and "not be sent" in stderr and "the charts could not be drawn" in stderr and TOKEN not in stdout + stderr, stderr
     with served(ReportModel()) as server:
         assert run_cli(["post", "--action", "send_success_report", "--dir", out, "--artifact-url", ARTIFACT_URL], env=env_for(server))[0] == 1 and server.calls == [], "no request when there is no report"
@@ -1083,7 +1089,7 @@ def _():
 @R.register("report build: a report request that would not fit the web app's limit is refused when it is BUILT (not only when it is posted), with the numbers in the message")
 def _():
     from datetime import datetime, timezone
-    outputs = da.validate_outputs(REAL_REPORTS, today=TODAY); email = da.build_payloads(outputs, RUN_ID, RUN_URL)["send_success_email"]; moment = datetime(2026, 10, 28, 2, 16, 5, tzinfo=timezone.utc); old = da.MAX_REQUEST_CHARS
+    outputs = da.validate_outputs(REAL_REPORTS, NOW); email = da.build_payloads(outputs, RUN_ID, RUN_URL)["send_success_email"]; moment = datetime(2026, 10, 28, 2, 16, 5, tzinfo=timezone.utc); old = da.MAX_REQUEST_CHARS
     assert da.build_report_payload(outputs, email, moment)["action"] == "send_success_report"
     da.MAX_REQUEST_CHARS = 9000
     try: raises(da.AutomationError, lambda: da.build_report_payload(outputs, email, moment), "more than the limit of 9000")

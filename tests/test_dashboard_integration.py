@@ -140,7 +140,7 @@ def _():
 def _():
     reports, out = private_copy("current", "reports"), os.path.join(tempfile.mkdtemp(dir=WORK), "dashboard_out"); os.makedirs(out)
     for name in os.listdir(os.path.join(gold(), "historical", "reports")): shutil.copy(os.path.join(gold(), "historical", "reports", name), reports)
-    old = {name: digest(os.path.join(reports, name)) for name in files_in(reports) if HISTORICAL in name}; assert len(old) == 2, old
+    old = {name: digest(os.path.join(reports, name)) for name in files_in(reports) if HISTORICAL in name}; assert len(old) == 3, old
     path = dashboard.generate(reports, generated_at=GENERATED_AT, out_dir=out); assert Path(path).name == f"dashboard_{CURRENT}.html", path
     assert {name: digest(os.path.join(reports, name)) for name in files_in(reports) if HISTORICAL in name} == old
 
@@ -152,8 +152,8 @@ def _():
 @R.register("the existing validate step refuses a reports folder that holds only a historical pair, so in the workflow build_dashboard is never reached with stale input")
 def _():
     reports = private_copy("historical", "reports")
-    try: da.validate_outputs(reports, date(2026, 10, 27))
-    except da.AutomationError as error: assert "2026-10-26" in str(error), str(error)
+    try: da.validate_outputs(reports, REAL_NOW + __import__("datetime").timedelta(minutes=4))
+    except da.AutomationError as error: assert "stale" in str(error), str(error)
     else: raise AssertionError("validate accepted a historical pair as the output of the current run")
 
 @R.register("a committed historical dashboard in the reports folder is not mistaken for the new one: the new file is written only to the output folder and the committed copy stays byte-identical")
@@ -166,7 +166,7 @@ def _():
 @R.register("pipeline order on one run: validate_outputs reports the analysis date, and the dashboard built afterwards from the same folder has exactly that date")
 def _():
     reports, out = private_copy("current", "reports"), os.path.join(tempfile.mkdtemp(dir=WORK), "dashboard_out"); os.makedirs(out)
-    validated = da.validate_outputs(reports, date(2026, 10, 27))["date"]; path = dashboard.generate(reports, generated_at=GENERATED_AT, out_dir=out)
+    validated = da.validate_outputs(reports, REAL_NOW + __import__("datetime").timedelta(minutes=4))["date"]; path = dashboard.generate(reports, generated_at=GENERATED_AT, out_dir=out)
     assert validated == CURRENT and Path(path).name == f"dashboard_{validated}.html" and payload_of(open(path, encoding="utf-8").read())["meta"]["close_period"]["end"] == validated
 
 @R.register("NEW CONTRACT - a dashboard built for the current run is refused by stage-deliverables when the pipeline's validated analysis date is a different day (exit 1, nothing staged)")

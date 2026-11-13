@@ -46,7 +46,7 @@ def _():
         assert section in ("env", "with"), f"line {number}: expression {expression!r} in '{section}'"
         if section == "with": assert key in ("name", "github_token", "commit_message"), f"line {number}: expression in with.{key}"
 
-@R.register("step references: every steps.<id>.outcome and steps.<id>.outputs.<name> names a step that exists AND comes earlier in the job (GitHub cannot read a later step); the only outputs read are validate_outputs.analysis_date and upload_deliverables.artifact-url; eighteen steps")
+@R.register("step references: every steps.<id>.outcome and steps.<id>.outputs.<name> names a step that exists AND comes earlier in the job (GitHub cannot read a later step); the only outputs read are validate_outputs.analysis_date and upload_deliverables.artifact-url; nineteen steps")
 def _():
     outputs = set()
     for number, index, section, key, expression in expression_sites():
@@ -55,14 +55,14 @@ def _():
             assert m.group(1) in STEP_IDS, f"line {number}: unknown step {m.group(1)}"; assert STEP_IDS.index(m.group(1)) < index, f"line {number}: step {m.group(1)} is not before step {STEP_IDS[index]}"
             if m.group(2): outputs.add((m.group(1), m.group(2)))
     assert outputs == {("validate_outputs", "analysis_date"), ("upload_deliverables", "artifact-url")}, f"MISSING FEATURE: the staging step must read analysis_date and the e-mail step the artifact-url (found {sorted(outputs)})"
-    assert len(STEP_IDS) == len(set(STEP_IDS)) == 18, STEP_IDS
+    assert len(STEP_IDS) == len(set(STEP_IDS)) == 19, STEP_IDS
 
-@R.register("conditions: the only if: conditions are always() on the artifact upload and failure() on the failure notice (nothing else is conditional)")
+@R.register("conditions: the only if: conditions are always() on the run-status step and the artifact upload and failure() on the failure notice (nothing else is conditional)")
 def _():
     conditions = {}
     for block in step_blocks():
         for value in re.findall(r"^        if: (.*)$", block, re.M): conditions[re.search(r"^        id: (\S+)", block, re.M).group(1)] = value.strip()
-    assert conditions == {"upload_artifacts": "always()", "notify_failure": "failure()"}, conditions
+    assert conditions == {"summarize_run": "always()", "upload_artifacts": "always()", "notify_failure": "failure()"}, conditions
 
 @R.register("layout: no tabs, two-space indentation everywhere, exactly the expected top-level keys, and no duplicate key in any mapping (top level, job, step, env, with)")
 def _():
@@ -98,9 +98,9 @@ def _():
             m = re.search(r"^        run: \|\n((?:          .*\n?)+)", block, re.M); assert m, f"{sid}: run is not a literal block"
             script = m.group(1).rstrip("\n"); assert script.strip() and not script.rstrip().endswith("\\"), f"{sid}: empty script or dangling continuation"
 
-@R.register("trigger: one cron entry with five valid fields (0 12 * * *) and a manual trigger without inputs; the contexts used (github.server_url, repository, run_id, run_attempt) are real context names")
+@R.register("trigger: one cron entry with five valid fields (0 4 * * *) and a manual trigger without inputs; the contexts used (github.server_url, repository, run_id, run_attempt) are real context names")
 def _():
-    crons = re.findall(r'- cron: "([^"]+)"', TEXT); assert crons == ["0 12 * * *"], crons
+    crons = re.findall(r'- cron: "([^"]+)"', TEXT); assert crons == ["0 4 * * *"], crons
     minute, hour, dom, month, dow = crons[0].split(); assert 0 <= int(minute) <= 59 and 0 <= int(hour) <= 23 and (dom, month, dow) == ("*", "*", "*")
     assert re.search(r"^  workflow_dispatch:\s*$", TEXT, re.M) and "inputs:" not in TEXT
 

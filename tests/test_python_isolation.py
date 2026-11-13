@@ -10,7 +10,7 @@ from wf_support import Runner, REPO, load
 da = load("daily_automation")
 WORKFLOW = os.path.join(REPO, ".github", "workflows", "daily-market-analysis.yml")
 DAILY = os.path.join(REPO, "src", "daily_automation.py")
-REAL_REPORTS = os.path.join(REPO, "reports")
+REAL_REPORTS = __import__("wf_support").committed_reports()
 TOKEN = "dummy-token-for-isolation-tests-0001"
 RUN_ID, RUN_URL = "123456789", "https://github.com/rizwana-qa/market-data-quality-pipeline/actions/runs/123456789"
 
@@ -203,12 +203,12 @@ def _():
         commands["install_dependencies"]
         == "python3 -m pip install --disable-pip-version-check -r requirements.txt"
         and commands["tests"] == "python3 tests/run_all.py"
-        and commands["analysis"] == "python3 src/run_workflow.py"
+        and commands["analysis"] == 'python3 src/run_workflow.py --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --diagnostics-dir automation_out'
     )
 
     assert (
         commands["validate_outputs"]
-        == "python3 src/daily_automation.py validate --reports-dir reports"
+        == "python3 src/daily_automation.py validate --reports-dir reports --out-dir automation_out"
     )
 
     assert commands["build_payload"].startswith(
@@ -246,6 +246,8 @@ def _():
     assert (
         "_dashboard" not in reachable
         and "_email_report" not in reachable
+        and "_run_evidence" not in reachable
+        and "_write_verification" not in reachable
         and not {
             "validate_outputs",
             "build_rows",
@@ -277,6 +279,7 @@ def _():
 
     assert inside == [
         ("_dashboard", "dashboard"),
+        ("_run_evidence", "run_evidence"),
         ("_email_report", "email_report"),
     ], inside
 
@@ -501,6 +504,7 @@ class Imitation:
                 "sheet_name_matches": True,
                 "headers_ok": True,
                 "email_valid": True,
+                "report_evidence_supported": True,
             }
 
         return {"success": False, "error": "INVALID_REQUEST"}
@@ -531,11 +535,15 @@ def _():
                 out,
                 "--run-id",
                 RUN_ID,
+                "--run-attempt",
+                "1",
+                "--date",
+                "2026-10-27",
                 "--run-url",
                 RUN_URL,
             ],
             env={},
-            now=date(2026, 10, 28),
+            now=__import__("datetime").datetime(2026, 10, 28, 7, 0, 0, tzinfo=__import__("datetime").timezone.utc),
         ) == 0
 
     commands = [
@@ -584,6 +592,7 @@ def _():
         assert not labels and TOKEN not in captured, (args, labels)
 
     assert server.actions == [
+        "self_check",                      # the read-only compatibility preflight that runs before the sheet update
         "upsert_analysis",
         "verify_analysis",
         "send_success_email",

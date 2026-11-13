@@ -39,6 +39,7 @@ ORDER = [
     "verify_sheet",
     "upload_deliverables",
     "send_success_email",
+    "summarize_run",
     "upload_artifacts",
     "notify_failure",
 ]
@@ -154,7 +155,7 @@ BY_ID = {step.get("id"): step for step in STEPS}
 
 
 @R.register(
-    "the workflow contains all 18 steps in the agreed order, "
+    "the workflow contains all 19 steps in the agreed order, "
     "including dashboard staging and GitHub Pages publishing"
 )
 def _():
@@ -171,14 +172,14 @@ def _():
 
 
 @R.register(
-    "triggers: exactly one daily schedule at 12:00 UTC "
-    "(04:00 PM Dubai) and manual workflow_dispatch; no other triggers or inputs"
+    "triggers: exactly one daily schedule at 04:00 UTC "
+    "(08:00 Dubai) and manual workflow_dispatch; no other triggers or inputs"
 )
 def _():
     on_block = TEXT.split("\npermissions:")[0]
 
     assert (
-        len(re.findall(r'^\s+- cron: "0 12 \* \* \*"', on_block, re.M))
+        len(re.findall(r'^\s+- cron: "0 4 \* \* \*"', on_block, re.M))
         == 1
     )
     assert on_block.count("cron:") == 1
@@ -323,7 +324,7 @@ def _():
         re.M,
     )
     assert re.search(
-        r"^python3 src/run_workflow\.py\s*$",
+        r'^python3 src/run_workflow\.py --run-id "\$GITHUB_RUN_ID" --run-attempt "\$GITHUB_RUN_ATTEMPT" --diagnostics-dir automation_out\s*$',
         BY_ID["analysis"]["run_text"],
         re.M,
     )
@@ -335,7 +336,7 @@ def _():
     )
 
     assert (
-        "daily_automation.py validate --reports-dir reports"
+        "daily_automation.py validate --reports-dir reports --out-dir automation_out"
         in BY_ID["validate_outputs"]["run_text"]
     )
 
@@ -525,6 +526,7 @@ def _():
     path = upload["text"]
     assert "reports/report_*.md" in path
     assert "reports/report_*_data.csv" in path
+    assert "reports/report_*_manifest.json" in path
     assert "automation_out/" in path
 
     assert (
@@ -630,12 +632,12 @@ def _():
 
     assert re.search(
         r"^python3 src/dashboard\.py "
-        r"--reports-dir reports --out-dir dashboard_out\s*$",
+        r'--reports-dir reports --out-dir dashboard_out --date "\$ANALYSIS_DATE"\s*$',
         build["run_text"],
         re.M,
     )
 
-    assert not build["env"]
+    assert build["env"] == {"ANALYSIS_DATE": "${{ steps.validate_outputs.outputs.analysis_date }}"}      # the validated date is passed down, never recalculated
 
     assert (
         stage["env"].get("ANALYSIS_DATE")
@@ -735,6 +737,7 @@ def _():
     assert commands == [
         "rm -f reports/report_*.md "
         "reports/report_*_data.csv "
+        "reports/report_*_manifest.json "
         "reports/dashboard_*.html"
     ]
 
@@ -865,7 +868,7 @@ def _():
         "src/dashboard_template.html":
             "5728e45531d29029357113a3047e1fbeecfa2c3cee8224c006e8fef81a08d817",
         "src/dashboard.py":
-            "ba332bf10b6173568459c6c493072453f4908e7a7ddcb0a16669e61fa9c8a332",
+            "1805895a4b361edb520844ef3ad983be9d7e44d4d921014d1dcc670057f89cdb",       # re-approved: shared candle rules, --date, byte-exact reading for the manifest hashes
         "src/vendor/plotly.min.js":
             "3b6e15d45dbb7fca5bd2094291e961ddc5472cd887009e6009a56dab668d721f",
         "reports/dashboard_2026-10-27.html":

@@ -3,11 +3,11 @@
 
 name: Daily Market Analysis
 
-# 12:00 UTC is 04:00 PM in Dubai (UTC+4).
+# 04:00 UTC is 08:00 AM in Dubai (UTC+4).
 # A run can also be started manually from the Actions tab.
 on:
   schedule:
-    - cron: "0 12 * * *"
+    - cron: "0 4 * * *"
   workflow_dispatch:
 
 permissions:
@@ -63,26 +63,28 @@ jobs:
         id: clear_stale_outputs
         timeout-minutes: 2
         run: |
-          rm -f reports/report_*.md reports/report_*_data.csv reports/dashboard_*.html
+          rm -f reports/report_*.md reports/report_*_data.csv reports/report_*_manifest.json reports/dashboard_*.html
 
       - name: Run the Bitcoin and Ethereum analysis
         id: analysis
         timeout-minutes: 10
         run: |
-          python3 src/run_workflow.py
+          python3 src/run_workflow.py --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --diagnostics-dir automation_out
 
       - name: Validate the report and CSV
         id: validate_outputs
         timeout-minutes: 3
         run: |
-          python3 src/daily_automation.py validate --reports-dir reports
+          python3 src/daily_automation.py validate --reports-dir reports --out-dir automation_out
 
       - name: Build the HTML dashboard from this run's CSV
         id: build_dashboard
+        env:
+          ANALYSIS_DATE: ${{ steps.validate_outputs.outputs.analysis_date }}
         timeout-minutes: 5
         run: |
           mkdir -p dashboard_out
-          python3 src/dashboard.py --reports-dir reports --out-dir dashboard_out
+          python3 src/dashboard.py --reports-dir reports --out-dir dashboard_out --date "$ANALYSIS_DATE"
 
       - name: Check and stage the report, CSV and dashboard
         id: stage_deliverables
@@ -239,10 +241,11 @@ jobs:
         id: build_payload
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ANALYSIS_DATE: ${{ steps.validate_outputs.outputs.analysis_date }}
         timeout-minutes: 3
         run: |
           python3 src/daily_automation.py build-payload --reports-dir reports --out-dir automation_out \
-            --run-id "$GITHUB_RUN_ID" --run-url "$RUN_URL"
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --run-url "$RUN_URL" --date "$ANALYSIS_DATE"
 
       - name: Write the rows to Google Sheets
         id: post_to_sheet
@@ -282,6 +285,23 @@ jobs:
         run: |
           python3 -I -S src/daily_automation.py post --action send_success_report --dir automation_out --artifact-url "$ARTIFACT_URL"
 
+      - name: Summarise the run status
+        id: summarize_run
+        if: always()
+        env:
+          OUTCOME_ANALYSIS: ${{ steps.analysis.outcome }}
+          OUTCOME_VALIDATE_OUTPUTS: ${{ steps.validate_outputs.outcome }}
+          OUTCOME_BUILD_PAYLOAD: ${{ steps.build_payload.outcome }}
+          OUTCOME_POST_TO_SHEET: ${{ steps.post_to_sheet.outcome }}
+          OUTCOME_VERIFY_SHEET: ${{ steps.verify_sheet.outcome }}
+          OUTCOME_SEND_SUCCESS_EMAIL: ${{ steps.send_success_email.outcome }}
+        timeout-minutes: 3
+        run: |
+          python3 src/daily_automation.py summarize-run --dir automation_out \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --outcome "analysis=$OUTCOME_ANALYSIS" --outcome "validate_outputs=$OUTCOME_VALIDATE_OUTPUTS" --outcome "build_payload=$OUTCOME_BUILD_PAYLOAD" \
+            --outcome "post_to_sheet=$OUTCOME_POST_TO_SHEET" --outcome "verify_sheet=$OUTCOME_VERIFY_SHEET" --outcome "send_success_email=$OUTCOME_SEND_SUCCESS_EMAIL"
+
       - name: Upload the reports and results
         id: upload_artifacts
         if: always()
@@ -291,6 +311,7 @@ jobs:
           path: |
             reports/report_*.md
             reports/report_*_data.csv
+            reports/report_*_manifest.json
             automation_out/
           retention-days: 14
           if-no-files-found: warn
@@ -320,6 +341,7 @@ jobs:
           OUTCOME_VERIFY_SHEET: ${{ steps.verify_sheet.outcome }}
           OUTCOME_UPLOAD_DELIVERABLES: ${{ steps.upload_deliverables.outcome }}
           OUTCOME_SEND_SUCCESS_EMAIL: ${{ steps.send_success_email.outcome }}
+          OUTCOME_SUMMARIZE_RUN: ${{ steps.summarize_run.outcome }}
           OUTCOME_UPLOAD_ARTIFACTS: ${{ steps.upload_artifacts.outcome }}
 
         timeout-minutes: 8
@@ -344,4 +366,5 @@ jobs:
             --outcome "verify_sheet=$OUTCOME_VERIFY_SHEET" \
             --outcome "upload_deliverables=$OUTCOME_UPLOAD_DELIVERABLES" \
             --outcome "send_success_email=$OUTCOME_SEND_SUCCESS_EMAIL" \
+            --outcome "summarize_run=$OUTCOME_SUMMARIZE_RUN" \
             --outcome "upload_artifacts=$OUTCOME_UPLOAD_ARTIFACTS"

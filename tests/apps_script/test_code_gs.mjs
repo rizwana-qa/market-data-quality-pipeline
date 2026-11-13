@@ -182,11 +182,12 @@ check("verify_analysis: validates its input like upsert (bad rows are refused) a
 });
 
 // ------------------------------------------------------------------ success email
-check("success email: sent only after the sheet is verified; one message to EMAIL_TO; body has the date, both assets, correlation, rules, validation and sheet status, workflow URL, execution time in UTC and Dubai", () => {
+check("success email: sent only after the sheet is verified; one message to EMAIL_TO; body has the date, both assets, correlation, rules and sheet status, workflow URL, execution time in UTC and Dubai", () => {
   const w = world(); assert.equal(w.call(upsertPayload()).success, true); const r = w.call(emailPayload());
   assert.equal(r.success, true); assert.equal(r.sheet_status, "ok"); assert.equal(r.email_status, "sent"); assert.equal(w.state.mail.sent.length, 1); const m = w.state.mail.sent[0];
   assert.equal(m.to, "owner@example.test"); assert.ok(m.subject.includes("2026-10-27")); const b = m.body;
-  for (const needle of ["2026-10-27", "BTC", "ETH", "80001.9", "2320.45", "0.928089", "strong positive correlation", "ETH noticeably more volatile", "down days largely coincide", "PASSED", WORKFLOW_URL, "2026-10-28 02:15:30 UTC", "2026-10-28 06:15:30", "Dubai", "Both assets fell on 16 of 30 days."]) assert.ok(b.includes(needle), "body lacks: " + needle);
+  for (const needle of ["2026-10-27", "BTC", "ETH", "80001.9", "2320.45", "0.928089", "strong positive correlation", "ETH noticeably more volatile", "down days largely coincide", WORKFLOW_URL, "2026-10-28 02:15:30 UTC", "2026-10-28 06:15:30", "Dubai", "Both assets fell on 16 of 30 days."]) assert.ok(b.includes(needle), "body lacks: " + needle);
+  assert.ok(!b.includes("PASSED") && !b.includes("Data validation"), "the text body must not claim a validation result (a constant carries no evidence)");
   assert.ok(/Spreadsheet:.*(verified|confirmed)/i.test(b), "sheet status line");
 });
 check("success email: NO email when the sheet holds no rows for the date (the update failed or was never made)", () => {
@@ -374,12 +375,12 @@ check("report: strict validation - an unknown or missing key, a wrong artifact l
   for (const [name, change] of Object.entries(mutations)) { const p = reportPayload(); change(p); const r = w.call(p); assert.equal(r.success, false, name + ": must fail"); assert.equal(r.error, "INVALID_PAYLOAD", `${name}: error code (got ${r.error})`); assert.equal(r.email_status, "not_attempted", name); }
   noMail(w); assert.equal(w.state.cache.size, 0, "a refused request must leave no deduplication entry");
 });
-check("report: text from the request reaches the HTML only ESCAPED - script tags, quotes, ampersands and angle brackets in observations, rule labels and variable values", () => {
-  const evil = `<script>alert(1)</script> & "q" 'a' <img src=x onerror=alert(2)>`; const body = reportBody(); body.coverage[1].latest = `<b>&"x'`;
+check("report: text from the request reaches the HTML only ESCAPED - script tags, quotes, ampersands and angle brackets in observations and rule labels", () => {
+  const evil = `<script>alert(1)</script> & "q" 'a' <img src=x onerror=alert(2)>`; const body = reportBody();
   const w = world(); const r = sentReport(w, { summary: summary({ observations: [evil], rules: { R1: evil, R2: "<i>r2</i>", R3: "r3" } }), report: body }); assert.equal(r.success, true, JSON.stringify(r));
   const m = lastMail(w), html = m.htmlBody;
-  assert.ok(!/<script/i.test(html) && !/<img src=x/i.test(html) && !html.includes("<b>&\"x'") && !html.includes("<i>r2</i>"), "raw markup from the request reached the HTML");
-  assert.ok(html.includes("&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;q&quot; &#39;a&#39; &lt;img src=x onerror=alert(2)&gt;") && html.includes("&lt;b&gt;&amp;&quot;x&#39;"), "the text must be present, escaped");
+  assert.ok(!/<script/i.test(html) && !/<img src=x/i.test(html) && !html.includes("<i>r2</i>"), "raw markup from the request reached the HTML");
+  assert.ok(html.includes("&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;q&quot; &#39;a&#39; &lt;img src=x onerror=alert(2)&gt;"), "the text must be present, escaped");
   assert.ok(m.body.includes(evil) || m.body.includes("alert(1)"), "the plain-text part may carry the text as it is");
 });
 check("report: the HTML is email-safe and well formed - balanced tables, presentation roles, inline styles, no script/link/svg/form/iframe, no remote images, links only to the two GitHub addresses, every cid backed by an inline image with alt text and explicit size, under the size budget", () => {
@@ -392,17 +393,18 @@ check("report: the HTML is email-safe and well formed - balanced tables, present
   assert.deepEqual([...cids].sort(), Object.keys(m.inlineImages).sort(), "every cid needs exactly one inline image and the other way round");
   assert.deepEqual([...new Set(s.hrefs)].sort(), [ARTIFACT_URL, WORKFLOW_URL].sort(), "links"); assert.ok(html.length < 60000, "HTML size " + html.length);
 });
-check("report: the content - date and status, both closes, daily and 7/14/30-day returns, volatility, drawdown with its dates, correlation, the rule labels, the observations, all 17 variables, the verification status, the time stamps and the disclaimer", () => {
+check("report: the content - date and status, both closes, daily and 7/14/30-day returns, volatility, drawdown with its dates, correlation, the rule labels, the observations, the completeness statement (not a validation claim), the time stamps and the disclaimer", () => {
   const w = world(); sentReport(w); const text = textOf(lastMail(w).htmlBody);
-  for (const needle of ["Daily Market Analysis", "2026-10-27", "PASSED", "80,001.90", "2,320.45", "-0.06%", "+0.31%", "-2.10%", "+3.40%", "-5.20%", "+5.00%", "-10.00%", "1.61%", "2.12%", "31.00%", "40.00%", "-7.52%", "-14.89%", "2026-10-02", "2026-10-15",
+  for (const needle of ["Daily Market Analysis", "2026-10-27", "Data completeness: 17 of 17 fields populated", "80,001.90", "2,320.45", "-0.06%", "+0.31%", "-2.10%", "+3.40%", "-5.20%", "+5.00%", "-10.00%", "1.61%", "2.12%", "31.00%", "40.00%", "-7.52%", "-14.89%", "2026-10-02", "2026-10-15",
                          "0.928089", "strong positive correlation", "ETH noticeably more volatile", "down days largely coincide", "Both assets fell on 16 of 30 days.", "1.317", "12", "0.86", "-6.11%", "2026-10-12",
                          "Google Sheets", "verified", "2 inserted", "0 updated", "2026-10-28 02:15:12 UTC", "2026-10-28 02:15:20 UTC", "Educational use only. Not financial advice.", "17 of 17"]) assert.ok(text.includes(needle), "the e-mail lacks: " + needle);
-  for (const name of COVERAGE_NAMES) assert.ok(text.includes(name), "variable missing: " + name);
+  for (const name of COVERAGE_NAMES.filter((n) => n.includes("_"))) assert.ok(!text.includes(name), "the 17-field inventory must not be listed: " + name);
+  assert.ok(!text.includes("PASSED") && !text.includes("GENERATED") && !text.includes("Data validation: PASS"), "no constant status claim");
 });
-check("report: data-quality status comes from the data - a variable with fewer valid rows than expected is shown as MISSING and the headline count drops; the two return variables are expected to have one row fewer", () => {
-  const ok = world(); sentReport(ok); const good = textOf(lastMail(ok).htmlBody); assert.ok(!good.includes("MISSING") && good.includes("17 of 17"));
-  const body = reportBody(); body.coverage[8].valid_rows = 29; const bad = world(); sentReport(bad, { report: body }); const text = textOf(lastMail(bad).htmlBody); assert.ok(text.includes("MISSING") && text.includes("16 of 17") && !text.includes("17 of 17"), text.slice(0, 200));
-  const returns = reportBody(); returns.coverage[3].valid_rows = 31; const odd = world(); sentReport(odd, { report: returns }); assert.ok(textOf(lastMail(odd).htmlBody).includes("MISSING"), "31 valid return rows cannot be right (one fewer than the closes)");
+check("report: data-quality status comes from the data - a variable with fewer valid rows than expected is named as incomplete and the count drops; the two return variables are expected to have one row fewer", () => {
+  const ok = world(); sentReport(ok); const good = textOf(lastMail(ok).htmlBody); assert.ok(!good.includes("Incomplete") && good.includes("17 of 17 fields populated"));
+  const body = reportBody(); body.coverage[8].valid_rows = 29; const bad = world(); sentReport(bad, { report: body }); const text = textOf(lastMail(bad).htmlBody); assert.ok(text.includes("Incomplete: btc_volume (29 of 31 rows)") && text.includes("16 of 17 fields populated") && !text.includes("17 of 17"), text.slice(0, 200));
+  const returns = reportBody(); returns.coverage[3].valid_rows = 31; const odd = world(); sentReport(odd, { report: returns }); assert.ok(textOf(lastMail(odd).htmlBody).includes("Incomplete: btc_return (31 of 30 rows)"), "31 valid return rows cannot be right (one fewer than the closes)");
 });
 // ---- no duplicate success e-mail (S4-1): the plain-text fallback is allowed ONLY while the HTML message has not been handed to the mail service. Once MailApp.sendEmail has been called for the HTML
 // message, an error or an unclear outcome is reported as send_outcome_unknown and nothing more is sent. "attempts" records every call to the mail service (true = an HTML message), delivered or not.
@@ -557,6 +559,86 @@ check("failure notice: authentication and validation still come first even while
   assert.equal(w.state.mail.attempts.length, 0); assert.equal(w.state.cachePuts, 0);
   for (const [name, run] of Object.entries(SUCCESS_RUNS)) { const v = world(); v.state.cacheFail.put = "x"; assert.ok(DEDUP_FAILED(run(v)), name + ": S4-2"); }
   const u = world(); u.state.mail.failHtmlWith = "x"; u.state.cacheFail.put = "x"; assert.ok(NO_SEND_CLAIM(sentReport(u)), "S4-1"); assert.equal(u.state.cachePuts, 0);
+});
+
+// ------------------------------------------------------------------ the executive layout (Phase A: presentation only) and the evidence-backed additions (Phase B); both payload shapes are accepted
+const positions = (html, needles) => needles.map((n) => html.indexOf(n));
+const ascending = (list) => list.every((p, i) => p >= 0 && (i === 0 || p > list[i - 1]));
+const goodValidation = (over = {}) => Object.assign({ run_id: "123456789", overall: "PASS", fields_total: 17, fields_validated: 17, instances_expected: 621, instances_evaluated: 621, instances_passed: 621, checks_total: 9, checks_passed: 9, assumptions: [], exceptions: [] }, over);
+const goodComparison = (over = {}) => Object.assign({ stronger: "ETH", spread_pp: 3.42, correlation_7d: 0.81, correlation_14d: 0.9 }, over);
+check("layout (Phase A): no constant status badge - no PASSED, no GENERATED, no 'Data validation' claim - and the completeness line replaces them, in the header and in the Data confidence section", () => {
+  const w = world(); sentReport(w); const m = lastMail(w), text = textOf(m.htmlBody);
+  assert.ok(!text.includes("PASSED") && !text.includes("GENERATED") && !text.includes("Report status") && !/Data validation: (PASS|PASSED)/.test(text), text.slice(0, 300));
+  assert.ok(text.includes("Data completeness: 17 of 17 fields populated") && text.includes("This is a completeness check only; it does not test whether the values are plausible") && text.includes("A validation result for the values themselves is not part of this message"));
+  assert.ok(!m.body.includes("PASSED"));
+});
+check("layout (Phase A): the 17-row field table is gone - no table headers, no variable names - but incomplete fields are still named", () => {
+  const w = world(); sentReport(w); const html = lastMail(w).htmlBody; assert.ok(!/<th\b/.test(html) && !html.includes("Valid rows") && !html.includes("Latest value"), "the technical table is still there");
+  for (const name of COVERAGE_NAMES.filter((n) => n.includes("_"))) assert.ok(!html.includes(name), name);        // "date" is also an ordinary word, so only the underscored variable names are looked for
+});
+check("layout (Phase A): the order is brief, figures, performance chart, risk text, drawdown chart, returns chart, relationship, data confidence, operations - the three charts are kept, each with a reading guide", () => {
+  const w = world(); sentReport(w); const html = lastMail(w).htmlBody;
+  assert.ok(ascending(positions(html, ["Market brief", "Latest figures", "cid:chart_indexed", "Risk and volatility", "cid:chart_drawdown", "cid:chart_returns", "How the assets moved together", "Data confidence", "Google Sheets and deliverables"])), positions(html, ["Market brief", "Latest figures", "cid:chart_indexed", "Risk and volatility", "cid:chart_drawdown", "cid:chart_returns", "How the assets moved together", "Data confidence", "Google Sheets and deliverables"]));
+  for (const guide of ["Both assets start at 100", "Bars below zero are down days", "0% means the asset closed at its highest close"]) assert.ok(html.includes(guide), guide);
+  assert.deepEqual(Object.keys(lastMail(w).inlineImages).sort(), ["chart_drawdown", "chart_indexed", "chart_returns"]);
+});
+check("layout (Phase A): the R1 to R3 thresholds are explained as classifications, not signals; the 30-day correlation is the primary measure; no diversification claim", () => {
+  const text = textOf((() => { const w = world(); sentReport(w); return lastMail(w).htmlBody; })());
+  for (const needle of ["0.30 and 0.70", "1.25 and 0.80", "0.75 and 0.50", "not trading signals", "does not guarantee diversification", "The 30-day correlation is the primary measure", "Past volatility does not predict future volatility"]) assert.ok(text.includes(needle), needle);
+});
+check("layout (Phase A): without the new parts the brief shows both 30-day returns and no performance leader, no spread and no short-window correlation (those are calculated by the client, never here)", () => {
+  const text = textOf((() => { const w = world(); sentReport(w); return lastMail(w).htmlBody; })());
+  assert.ok(text.includes("Over the 30-day window, Bitcoin returned -5.20% and Ethereum -10.00%") && !text.includes("stronger performer") && !text.includes("percentage points") && !text.includes("Analyst context"), text.slice(0, 400));
+});
+check("compatibility: a report in the OLD shape (five parts) and one in the NEW shape (with comparison and validation) are both accepted and both send exactly one HTML e-mail", () => {
+  for (const over of [{}, { report: reportBody({ comparison: goodComparison(), validation: goodValidation() }) }, { report: reportBody({ comparison: goodComparison() }) }, { report: reportBody({ validation: goodValidation() }) }]) {
+    const w = world(); const r = sentReport(w, over); assert.equal(r.success, true, JSON.stringify(r)); assert.equal(r.email_format, "html"); assert.equal(w.state.mail.sent.length, 1);
+  }
+});
+check("Phase B: the brief names the stronger performer and the spread in percentage points (as given, never calculated); the short-window correlations are secondary analyst context with a caveat", () => {
+  const w = world(); sentReport(w, { report: reportBody({ comparison: goodComparison() }) }); const text = textOf(lastMail(w).htmlBody);
+  assert.ok(text.includes("Ethereum was the stronger performer over the 30-day window, ahead by 3.42 percentage points."), text.slice(0, 500));
+  assert.ok(text.includes("Analyst context: correlation, 7 days") && text.includes("0.81") && text.includes("only 7 observations") && text.includes("Analyst context: correlation, 14 days") && text.includes("only 14 observations"));
+  assert.ok(text.includes("Correlation of daily returns (30 days)") && text.indexOf("Correlation of daily returns (30 days)") < text.indexOf("Analyst context: correlation, 7 days"), "the 30-day correlation stays primary");
+  const b = world(); sentReport(b, { report: reportBody({ comparison: goodComparison({ stronger: "BTC", spread_pp: -1.5, correlation_7d: null, correlation_14d: null }) }) }); const tb = textOf(lastMail(b).htmlBody);
+  assert.ok(tb.includes("Bitcoin was the stronger performer over the 30-day window, ahead by 1.50 percentage points.") && !tb.includes("Analyst context"), tb.slice(0, 400));
+  const e = world(); sentReport(e, { report: reportBody({ comparison: goodComparison({ stronger: "equal", spread_pp: 0.001 }) }) }); assert.ok(textOf(lastMail(e).htmlBody).includes("returned the same, to two decimals"));
+});
+check("Phase B: a validation PASS is shown with its evidence (fields validated, candle checks, verification checks) and the header line; an applied assumption is stated", () => {
+  const w = world(); sentReport(w, { report: reportBody({ validation: goodValidation({ assumptions: ["A1"] }) }) }); const text = textOf(lastMail(w).htmlBody);
+  for (const needle of ["Data validation: PASS (17 of 17 fields validated)", "Validation result", "Fields validated", "17 of 17", "Candle checks passed", "621 of 621", "Verification checks passed", "9 of 9", "Assumption A1: A day without trades was accepted as volume 0"]) assert.ok(text.includes(needle), needle);
+});
+check("Phase B: FAIL, INCONCLUSIVE, BLOCKED and NOT RUN are shown as they are, with the exceptions (rule, severity, outcome, field, reason); the header never says PASS", () => {
+  for (const overall of ["FAIL", "INCONCLUSIVE", "BLOCKED", "NOT RUN"]) {
+    const exceptions = [{ rule_id: "CND-VWAP", severity: "ERROR", outcome: overall === "NOT RUN" ? "NOT RUN" : overall === "BLOCKED" ? "BLOCKED" : overall === "INCONCLUSIVE" ? "INCONCLUSIVE" : "FAIL", field: "vwap", explanation: "BTC 2026-10-22 vwap outside the range" }];
+    const w = world(); sentReport(w, { report: reportBody({ validation: goodValidation({ overall, fields_validated: 15, instances_passed: 620, exceptions }) }) }); const text = textOf(lastMail(w).htmlBody);
+    assert.ok(text.includes("Data validation: " + overall + " (1 exception listed under Data confidence)") && !/Data validation: PASS/.test(text) && text.includes("CND-VWAP (ERROR, " + exceptions[0].outcome + ", vwap): BTC 2026-10-22 vwap outside the range") && text.includes("15 of 17"), overall);
+  }
+});
+check("Phase B: a validation block that claims PASS without complete evidence is refused (INVALID_PAYLOAD, nothing sent): partial fields, partial instances, partial checks, an exception, an empty plan", () => {
+  for (const bad of [{ fields_validated: 16 }, { instances_passed: 620 }, { instances_evaluated: 620 }, { checks_passed: 8 }, { checks_total: 0, checks_passed: 0 }, { instances_expected: 0, instances_evaluated: 0, instances_passed: 0 },
+                     { exceptions: [{ rule_id: "CND-VWAP", severity: "ERROR", outcome: "FAIL", field: "vwap", explanation: "x" }] }]) {
+    const w = world(); w.call(upsertPayload()); refused(w, reportPayload({ report: reportBody({ validation: goodValidation(bad) }) }), "INVALID_PAYLOAD", JSON.stringify(bad)); noMail(w);
+  }
+});
+check("Phase B: malformed new parts are refused (INVALID_PAYLOAD, nothing sent): another run's id, an unknown outcome, an unknown assumption, too many or malformed exceptions, markup in an exception, extra keys, an inconsistent spread, out-of-range correlations", () => {
+  const ex = { rule_id: "CND-VWAP", severity: "ERROR", outcome: "FAIL", field: "vwap", explanation: "x" };
+  const validations = [{ run_id: "999" }, { overall: "MAYBE" }, { assumptions: ["A9"] }, { assumptions: "A1" }, { fields_total: 16 }, { instances_evaluated: 622 }, { exceptions: [ex, ex, ex, ex, ex, ex] }, { exceptions: [Object.assign({}, ex, { outcome: "PASS" })] },
+                       { exceptions: [Object.assign({}, ex, { explanation: "<script>alert(1)</script>" })] }, { exceptions: [Object.assign({}, ex, { rule_id: "vwap rule" })] }, { exceptions: [Object.assign({}, ex, { severity: "FATAL" })] }, { exceptions: [Object.assign({}, ex, { extra: 1 })] }, { extra: 1 }];
+  const comparisons = [{ stronger: "XRP" }, { stronger: "ETH", spread_pp: -1 }, { stronger: "BTC", spread_pp: 1 }, { stronger: "equal", spread_pp: 1 }, { spread_pp: "3" }, { spread_pp: Infinity }, { correlation_7d: 1.5 }, { correlation_14d: -2 }, { correlation_7d: "0.5" }, { extra: 1 }];
+  for (const v of validations) { const w = world(); w.call(upsertPayload()); refused(w, reportPayload({ report: reportBody({ validation: goodValidation(v) }) }), "INVALID_PAYLOAD", "validation " + JSON.stringify(v)); noMail(w); }
+  for (const c of comparisons) { const w = world(); w.call(upsertPayload()); refused(w, reportPayload({ report: reportBody({ comparison: goodComparison(c) }) }), "INVALID_PAYLOAD", "comparison " + JSON.stringify(c)); noMail(w); }
+  for (const extra of [{ other: 1 }]) { const w = world(); w.call(upsertPayload()); refused(w, reportPayload({ report: reportBody(extra) }), "INVALID_PAYLOAD", "unknown report key"); noMail(w); }
+});
+check("Phase B: Apps Script performs only contract and invariant checks - the source holds no financial calculation (no sqrt, no mean, no correlation, no division of returns) and the thresholds are text", () => {
+  const source = readSource(); const section = source.slice(source.indexOf("function validateComparison_"), source.indexOf("// ------------------------------------------------------------------ the sheet"));
+  for (const word of ["Math.sqrt", "Math.pow", "reduce(", "correlation(", "stdev", "mean("]) assert.ok(!section.includes(word), word);
+  assert.ok(!/\bspread_pp\s*=|spread_pp\s*[-+*\/]/.test(source), "the spread is never calculated here");
+});
+
+check("self_check: the read-only reply tells the client that this script supports the evidence-backed report (report_evidence_supported), and nothing is written or sent", () => {
+  const w = world(); const r = w.call({ action: "self_check", token: SECRET, expected_sheet_name: "Sheet1" });
+  assert.equal(r.report_evidence_supported, true); assert.equal(r.success, true); assert.deepEqual(w.dataRows(), []); assert.equal(w.state.mail.sent.length, 0);
 });
 
 console.log(`\n${passed}/${passed + failed} Apps Script (Code.gs) checks passed`);

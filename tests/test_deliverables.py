@@ -25,7 +25,7 @@ CURRENT, HISTORICAL = "2026-10-26", "2026-03-19"
 NAMES = lambda day: [f"report_{day}.md", f"report_{day}_data.csv", f"dashboard_{day}.html"]
 
 # ================================================================ (A) the cleanup step
-PATTERNS = ["reports/report_*.md", "reports/report_*_data.csv", "reports/dashboard_*.html"]
+PATTERNS = ["reports/report_*.md", "reports/report_*_data.csv", "reports/report_*_manifest.json", "reports/dashboard_*.html"]
 GENERATED = ["reports/report_2026-10-25.md", "reports/report_2026-10-25_data.csv", "reports/dashboard_2026-10-25.html", "reports/report_2026-10-26.md", "reports/report_2026-10-26_data.csv", "reports/dashboard_2026-10-26.html",
              "reports/report_2026-03-19.md", "reports/report_2026-03-19_data.csv"]
 UNRELATED_IN_REPORTS = ["reports/notes.md", "reports/report_notes.txt", "reports/report_2026-10-26.md.bak", "reports/report_2026-10-26.md.tmp", "reports/report_2026-10-26_data.csv.bak", "reports/dashboard_2026-10-26.html.tmp",
@@ -41,13 +41,13 @@ def step_script(step_id):
     raise AssertionError(f"MISSING FEATURE: the workflow has no step with id {step_id!r}")
 
 def narrow_cleanup_script():
-    """The script of the cleanup step, returned only if it is plain 'rm -f' of exactly the three patterns."""
+    """The script of the cleanup step, returned only if it is plain 'rm -f' of exactly the four patterns."""
     script = step_script("clear_stale_outputs"); commands = [line.strip() for line in script.splitlines() if line.strip() and not line.strip().startswith("#")]
     assert commands, "the cleanup script is empty"
     for line in commands:
         tokens = line.split(); assert tokens[:2] == ["rm", "-f"], f"only 'rm -f' is allowed, found: {line!r}"
-        arguments = [t for t in tokens[2:] if t != "--"]; assert arguments and all(a in PATTERNS for a in arguments), f"arguments other than the three patterns: {line!r}"
-    assert {a for line in commands for a in line.split() if a in PATTERNS} == set(PATTERNS), "all three patterns must be cleaned"
+        arguments = [t for t in tokens[2:] if t != "--"]; assert arguments and all(a in PATTERNS for a in arguments), f"arguments other than the four patterns: {line!r}"
+    assert {a for line in commands for a in line.split() if a in PATTERNS} == set(PATTERNS), "all four patterns must be cleaned"
     code_only = "\n".join(commands)                                          # comments may say what they like; only the commands are judged
     assert not re.search(r"(^|\s)-[A-Za-z]*[rR]", code_only) and "--recursive" not in code_only, "recursive deletion"
     for forbidden in ("find ", "git ", "xargs", "sudo", "$", "`", "..", "~", "|", ";", "&", ">", "<", "\\", "/*", " * "): assert forbidden not in code_only, f"forbidden in the cleanup script: {forbidden!r}"

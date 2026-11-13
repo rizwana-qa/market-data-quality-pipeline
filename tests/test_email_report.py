@@ -6,19 +6,20 @@ import ast, json, math, os, re, struct, sys, zlib
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from wf_support import Runner, REPO, load
+from wf_support import Runner, REPO, load, committed_reports
 import independent_calc as ic
 
 da, er, dashboard = load("daily_automation"), load("email_report"), load("dashboard")
 R = Runner("email report checks")
-REAL_REPORTS = os.path.join(REPO, "reports"); TODAY = date(2026, 10, 28)
+REAL_REPORTS = committed_reports(); TODAY = date(2026, 10, 28)
 RUN_ID, RUN_URL = "123456789", "https://github.com/rizwana-qa/market-data-quality-pipeline/actions/runs/123456789"
 GENERATED = datetime(2026, 10, 28, 2, 16, 5, tzinfo=timezone.utc)
 TOKEN_ROOM = 300                                   # a longer token than any realistic one, for the size budget
 ARTIFACT_URL = RUN_URL + "/artifacts/987654321"
 
 _cache = {}
-def outputs(): return da.validate_outputs(REAL_REPORTS, TODAY)
+NOW = datetime(2026, 10, 28, 7, 0, 0, tzinfo=timezone.utc)      # shortly after the committed report's fetch time (2026-10-28 06:56:33 UTC)
+def outputs(): return da.validate_outputs(REAL_REPORTS, NOW)
 def report():
     if "report" not in _cache: _cache["report"] = er.build_report(outputs(), GENERATED)
     return _cache["report"]
@@ -127,11 +128,11 @@ def _():
     except er.EmailReportError: pass
     else: raise AssertionError("an unknown chart kind was accepted")
 
-@R.register("the module needs nothing new and talks to nothing: it imports only the standard library and the project's dashboard/analysis modules, and uses no network, subprocess or file-writing call")
+@R.register("the module needs nothing new and talks to nothing: it imports only the standard library and the project's own standard-library-only modules (dashboard, analysis, candle_rules, run_evidence), and uses no network, subprocess or file-writing call")
 def _():
     source = open(os.path.join(REPO, "src", "email_report.py"), encoding="utf-8").read(); tree = ast.parse(source)
     imported = {(a.name if isinstance(n, ast.Import) else n.module).split(".")[0] for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom)) for a in (n.names if isinstance(n, ast.Import) else [n])}
-    assert imported <= set(sys.stdlib_module_names) | {"dashboard", "analysis"}, sorted(imported - set(sys.stdlib_module_names))
+    assert imported <= set(sys.stdlib_module_names) | {"dashboard", "analysis", "candle_rules", "run_evidence"}, sorted(imported - set(sys.stdlib_module_names))
     for forbidden in ("socket", "urllib", "requests", "http", "subprocess", "os.system", "open(", "eval(", "exec(", "pickle"): assert forbidden not in source, forbidden
 
 # ================================================================ the request body
@@ -222,5 +223,91 @@ def _():
     try: er.build_report(outputs(), datetime(2026, 10, 28, 2, 16, 5))
     except er.EmailReportError as error: assert "timezone" in str(error), str(error)
     else: raise AssertionError("a time without a time zone was accepted")
+
+# ================================================================ Phase B: the spread, the stronger performer, the optional short-window correlations, and the evidence-backed validation
+import copy
+import candle_rules as cr
+import run_evidence as ev
+
+
+def closes_of(asset): return outputs()["dataset"]["closes"][asset][-31:]
+def returns_of(asset): return outputs()["dataset"]["returns"][asset]
+
+@R.register("comparison: the spread is (ETH 30-day return - BTC 30-day return) x 100, in percentage points, equal to the independent Decimal calculation from the CSV closes (to 6 decimals); the stronger performer agrees with its sign")
+def _():
+    c = report()["comparison"]; expected = (ic.cumulative(closes_of("ETH")) - ic.cumulative(closes_of("BTC"))) * 100
+    assert set(c) == {"stronger", "spread_pp", "correlation_7d", "correlation_14d"} and abs(Decimal(repr(c["spread_pp"])) - expected) < Decimal("0.000001"), (c, expected)
+    assert c["stronger"] == ("ETH" if expected > 0 else "BTC")
+    assert abs(c["spread_pp"] - (report()["assets"]["eth"]["return_30d"] - report()["assets"]["btc"]["return_30d"]) * 100) < 1e-6        # the same two published 30-day returns the e-mail shows
+@R.register("comparison: stronger is the larger 30-day return, 'equal' below half a hundredth of a point (boundaries 0.0049 and 0.005, a tie, both signs); the spread is signed and rounded to 6 decimals")
+def _():
+    f = er.comparison_of
+    assert f(0.10, 0.10, None, None)["stronger"] == "equal" and f(0.10, 0.100049, None, None)["stronger"] == "equal" and f(0.10, 0.10005, None, None)["stronger"] == "ETH" and f(0.10, 0.09995, None, None)["stronger"] == "BTC"
+    assert f(-0.05, -0.10, None, None) == {"stronger": "BTC", "spread_pp": -5.0, "correlation_7d": None, "correlation_14d": None} and f(0.0, 0.123456789, None, None)["spread_pp"] == 12.345679
+@R.register("comparison: the 7- and 14-day correlations are the Pearson correlations of exactly the last 7 and 14 daily returns (independent calculator); they are secondary and may be null")
+def _():
+    c = report()["comparison"]
+    for key, k in (("correlation_7d", 7), ("correlation_14d", 14)):
+        expected = ic.correlation([ic.dec(x) for x in returns_of("BTC")[-k:]], [ic.dec(x) for x in returns_of("ETH")[-k:]]); assert abs(Decimal(repr(c[key])) - expected) < Decimal("0.000001"), (key, c[key], expected)
+    assert er.comparison_of(0.1, 0.2, None, 0.5)["correlation_7d"] is None
+@R.register("validation: for the real outputs the evidence is a complete PASS - run id, all 17 fields, 621 of 621 candle instances, every verification check - with no assumption and no exception")
+def _():
+    v = report()["validation"]
+    assert v == {"run_id": "123456789", "overall": "PASS", "fields_total": 17, "fields_validated": 17, "instances_expected": 621, "instances_evaluated": 621, "instances_passed": 621, "checks_total": 10, "checks_passed": 10, "assumptions": [], "exceptions": []}, v
+@R.register("validation: without evidence (no manifest or no verification) there is NO validation part and so never a PASS; the report is still valid and says only what completeness supports")
+def _():
+    o = dict(outputs()); o.pop("manifest"); r = er.build_report(o, GENERATED); assert "validation" not in r and "comparison" in r
+    o = dict(outputs()); o.pop("verification"); assert "validation" not in er.build_report(o, GENERATED)
+@R.register("validation: a failing candle instance, an incomplete producer envelope or a failed verification check each make the overall something other than PASS, and the exception names rule, severity, outcome and field")
+def _():
+    o = copy.deepcopy(outputs()); ledger = o["dataset"]["candle_ledger"]
+    ledger["non_pass"] = [{"rule_id": "CND-VWAP", "severity": "ERROR", "outcome": "FAIL", "scope": "candle", "asset": "BTC", "date": "2026-10-22", "field": "vwap", "expected": "x", "actual": "vwap 9999999.0", "explanation": "BTC 2026-10-22: vwap is outside the range"}]
+    for row in ledger["rules"]:
+        if row["rule_id"] == "CND-VWAP": row["pass"] -= 1; row["fail"] += 1
+    v = er.build_validation(o); assert v["overall"] == "FAIL" and v["instances_passed"] == 620 and v["fields_validated"] == 12 and v["exceptions"][0] == {"rule_id": "CND-VWAP", "severity": "ERROR", "outcome": "FAIL", "field": "vwap", "explanation": "BTC 2026-10-22: vwap is outside the range"}, v
+    o = copy.deepcopy(outputs()); o["manifest"]["envelope"]["families"].pop("source"); v = er.build_validation(o); assert v["overall"] != "PASS", v
+    o = copy.deepcopy(outputs()); o["verification"]["checks"][1]["outcome"] = "FAIL"; o["verification"]["overall"] = "FAIL"; v = er.build_validation(o)
+    assert v["overall"] == "FAIL" and v["checks_passed"] == 9 and any(e["rule_id"] == "MAN-HASH-CSV" for e in v["exceptions"]), v
+@R.register("validation: incomplete evidence is never PASS - a missing candle instance, a missing CSV check, an unknown assumption - it is at best INCONCLUSIVE")
+def _():
+    o = copy.deepcopy(outputs()); o["dataset"]["candle_ledger"]["missing"] = 1; o["dataset"]["candle_ledger"]["evaluated"] -= 1; assert er.build_validation(o)["overall"] != "PASS"
+    o = copy.deepcopy(outputs()); o["verification"]["checks"] = [c for c in o["verification"]["checks"] if c["id"] != "CON-CSV"]; v = er.build_validation(o); assert v["overall"] == "INCONCLUSIVE" and v["fields_validated"] == 14, v
+    o = copy.deepcopy(outputs()); o["dataset"]["candle_ledger"]["assumptions_applied"] = ["A9"]; v = er.build_validation(o); assert v["overall"] == "INCONCLUSIVE" and v["assumptions"] == []
+    o = copy.deepcopy(outputs()); o["dataset"]["candle_ledger"]["assumptions_applied"] = ["A1"]; assert er.build_validation(o)["assumptions"] == ["A1"] and er.build_validation(o)["overall"] == "PASS"
+@R.register("validation: exceptions are capped at five, shortened, and cleaned of control characters and angle brackets (so they are safe to show), and never empty")
+def _():
+    o = copy.deepcopy(outputs()); o["dataset"]["candle_ledger"]["non_pass"] = [{"rule_id": "CND-COUNT", "severity": "ERROR", "outcome": "FAIL", "scope": "candle", "asset": "ETH", "date": f"2026-10-0{i}", "field": "trade_count", "expected": "x", "actual": "y",
+                                                                           "explanation": "<script>alert(1)</script>\n" + "x" * 500} for i in range(1, 9)]
+    v = er.build_validation(o); assert len(v["exceptions"]) == 5 and all(len(e["explanation"]) <= 200 and "<" not in e["explanation"] and "\n" not in e["explanation"] and e["field"] for e in v["exceptions"]), v["exceptions"][0]
+    assert er._plain("", 40) == "no detail" and er._plain("a<b", 40) == "a b"
+@R.register("fields validated: 17 for a clean ledger; a failing VWAP of one asset takes its five covered columns out; the identical-series failure takes every candle column out; an incomplete ledger leaves only the CSV columns; no CSV pass leaves only the candle columns")
+def _():
+    clean = outputs()["dataset"]["candle_ledger"]; assert cr.fields_validated(clean, True) == (17, 17) and cr.fields_validated(clean, False) == (14, 17)
+    bad = copy.deepcopy(clean); bad["non_pass"] = [{"rule_id": "XPR-1", "asset": "BTC+ETH"}]; assert cr.fields_validated(bad, True) == (3, 17)
+    miss = copy.deepcopy(clean); miss["missing"] = 2; assert cr.fields_validated(miss, True) == (3, 17)
+    one = copy.deepcopy(clean); one["non_pass"] = [{"rule_id": "CND-PRICE-OPEN", "asset": "ETH"}]; assert cr.fields_validated(one, True) == (16, 17)
+@R.register("check_report accepts both shapes - the old five parts alone, and with comparison and validation - and refuses an inconsistent comparison or a validation PASS without complete evidence")
+def _():
+    r = copy.deepcopy(report()); er.check_report(r)
+    old = {k: v for k, v in r.items() if k not in ("comparison", "validation")}; er.check_report(old)
+    for edit, word in ((lambda x: x["comparison"].update(stronger="ETH" if x["comparison"]["stronger"] == "BTC" else "BTC"), "agree"), (lambda x: x["comparison"].update(stronger="XRP"), "agree"), (lambda x: x["comparison"].update(correlation_7d=2), "correlation_7d"), (lambda x: x["comparison"].update(extra=1), "comparison"),
+                       (lambda x: x["validation"].update(fields_validated=16), "PASS needs complete evidence"), (lambda x: x["validation"].update(instances_passed=620), "PASS needs complete evidence"), (lambda x: x["validation"].update(checks_passed=9), "PASS needs complete evidence"),
+                       (lambda x: x["validation"].update(exceptions=[{"rule_id": "CND-VWAP", "severity": "ERROR", "outcome": "FAIL", "field": "vwap", "explanation": "x"}]), "PASS needs complete evidence"),
+                       (lambda x: x["validation"].update(overall="MAYBE"), "five outcomes"), (lambda x: x["validation"].update(run_id="x"), "run id"), (lambda x: x["validation"].update(assumptions=["A9"]), "assumptions"),
+                       (lambda x: x["validation"].update(fields_total=16), "consistent"), (lambda x: x["validation"].update(extra=1), "validation"), (lambda x: x.update(other=1), "exactly")):
+        bad = copy.deepcopy(r); edit(bad)
+        try: er.check_report(bad)
+        except er.EmailReportError as e: assert word in str(e), (word, str(e))
+        else: raise AssertionError("accepted: " + word)
+@R.register("the report stays inside the web app's size limits with the new parts, and the daily_automation request check accepts the optional parts only")
+def _():
+    assert len(json.dumps(report(), allow_nan=False)) < er.MAX_REPORT_CHARS and "comparison" in report() and "validation" in report()
+@R.register("thresholds drift: the R1-R3 thresholds written in Code.gs (shown as text in the e-mail) equal the constants of analysis.py - the only place where the numbers are defined")
+def _():
+    gs = open(os.path.join(REPO, "apps_script", "Code.gs"), encoding="utf-8").read(); an = open(os.path.join(REPO, "src", "analysis.py"), encoding="utf-8").read()
+    found = re.search(r"const THRESHOLDS = \{ R1: \[([0-9.]+), ([0-9.]+)\], R2: \[([0-9.]+), ([0-9.]+)\], R3: \[([0-9.]+), ([0-9.]+)\] \}", gs); assert found, "THRESHOLDS not found in Code.gs"
+    const = lambda name: float(re.search(rf"^{name} = ([0-9.]+)", an, re.M).group(1))
+    assert [float(x) for x in found.groups()] == [const("CORRELATION_WEAK_BELOW"), const("CORRELATION_STRONG_FROM"), const("VOLATILITY_RATIO_HIGH"), const("VOLATILITY_RATIO_LOW"), const("DOWN_DAY_OVERLAP_HIGH"), const("DOWN_DAY_OVERLAP_LOW")], found.groups()
+
 
 R.finish()

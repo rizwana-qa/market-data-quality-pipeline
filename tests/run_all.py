@@ -9,7 +9,7 @@ import os, shutil, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-PYTHON_SUITES = ["test_analysis_units.py", "test_report_content.py", "test_workflow_integration.py", "test_replace_failures.py", "test_csv_17col.py", "test_daily_automation.py", "test_workflow_yaml.py", "test_python_isolation.py", "test_contract_end_to_end.py", "test_workflow_expressions.py", "test_line_endings.py", "test_job_summary_isolation.py", "test_dashboard_integration.py", "test_deliverables.py", "test_workflow_pipeline.py", "test_email_report.py"]
+PYTHON_SUITES = ["test_analysis_units.py", "test_report_content.py", "test_workflow_integration.py", "test_replace_failures.py", "test_csv_17col.py", "test_daily_automation.py", "test_workflow_yaml.py", "test_python_isolation.py", "test_contract_end_to_end.py", "test_workflow_expressions.py", "test_line_endings.py", "test_job_summary_isolation.py", "test_dashboard_integration.py", "test_deliverables.py", "test_workflow_pipeline.py", "test_email_report.py", "test_fetch_data_validation.py", "test_market_data_pipeline.py", "test_candle_rules.py", "test_run_evidence.py", "test_freshness_status.py", "test_release_fixes.py"]
 NODE_SUITES = [os.path.join("apps_script", "test_code_gs.mjs")]
 SUITE_TIMEOUT_SECONDS = 600
 GITHUB_FILE_VARIABLES = ("GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT")   # files GitHub Actions reads after a step: the tests must never write into the real ones

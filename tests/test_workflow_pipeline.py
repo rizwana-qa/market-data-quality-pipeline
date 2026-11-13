@@ -53,7 +53,7 @@ def analysis(ws):
 def validate(ws):
     """The validation step, in-process with a fixed clock; returns (exit code, the analysis_date output as GitHub would read it from GITHUB_OUTPUT)."""
     output = os.path.join(ws, "github_output.txt"); open(output, "w").close()
-    code = da.main(["validate", "--reports-dir", os.path.join(ws, "reports")], env={"GITHUB_OUTPUT": output}, now=date(2026, 10, 27))
+    code = da.main(["validate", "--reports-dir", os.path.join(ws, "reports")], env={"GITHUB_OUTPUT": output}, now=REAL_NOW + __import__("datetime").timedelta(minutes=4))
     found = re.findall(r"^analysis_date=(.*)$", open(output, encoding="utf-8").read(), re.M); return code, (found[-1] if found else None)
 def digest(path): return hashlib.sha256(open(path, "rb").read()).hexdigest()
 def listing(folder): return sorted(os.listdir(folder)) if os.path.isdir(folder) else None
@@ -63,7 +63,7 @@ def _():
     ws = checkout(); code, text = run_step(ws, "clear_stale_outputs"); assert code == 0, text
     assert listing(os.path.join(ws, "reports")) == [], f"the committed stale files are still in the checkout: {listing(os.path.join(ws, 'reports'))}"
     analysis(ws); code, analysis_date = validate(ws); assert code == 0 and analysis_date == CURRENT, (code, analysis_date)
-    code, text = run_step(ws, "build_dashboard"); assert code == 0, text
+    code, text = run_step(ws, "build_dashboard", {"ANALYSIS_DATE": analysis_date}); assert code == 0, text
     assert listing(os.path.join(ws, "dashboard_out")) == [f"dashboard_{CURRENT}.html"], listing(os.path.join(ws, "dashboard_out"))
     code, text = run_step(ws, "stage_deliverables", {"ANALYSIS_DATE": analysis_date}); assert code == 0, text
     assert listing(os.path.join(ws, "deliverables")) == sorted(NAMES(CURRENT)), listing(os.path.join(ws, "deliverables"))
@@ -74,7 +74,7 @@ def _():
 @R.register("the committed dashboard is not touched by the pipeline and the dashboard of the run is a NEW file: the staged dashboard names this run's CSV and report")
 def _():
     ws = checkout(); committed = digest(os.path.join(ws, "reports", f"dashboard_{STALE}.html")); run_step(ws, "clear_stale_outputs"); analysis(ws); code, analysis_date = validate(ws)
-    assert run_step(ws, "build_dashboard")[0] == 0 and run_step(ws, "stage_deliverables", {"ANALYSIS_DATE": analysis_date})[0] == 0
+    assert run_step(ws, "build_dashboard", {"ANALYSIS_DATE": analysis_date})[0] == 0 and run_step(ws, "stage_deliverables", {"ANALYSIS_DATE": analysis_date})[0] == 0
     page = open(os.path.join(ws, "deliverables", f"dashboard_{CURRENT}.html"), encoding="utf-8").read()
     assert f'"csv_file":"report_{CURRENT}_data.csv"' in page and f'"report_file":"report_{CURRENT}.md"' in page and digest(os.path.join(ws, "deliverables", f"dashboard_{CURRENT}.html")) != committed
     assert digest(os.path.join(REPO, "reports", f"dashboard_{STALE}.html")) == committed, "the committed dashboard in the repository changed"
@@ -85,20 +85,22 @@ def _():
     code, analysis_date = validate(ws); assert code == 1 and analysis_date is None, (code, analysis_date)
     assert listing(os.path.join(ws, "deliverables")) is None and listing(os.path.join(ws, "dashboard_out")) is None
 
-@R.register("stale input is refused even if the cleanup were skipped: the committed (newer-dated, in this fixture) CSV hijacks the dashboard step, and staging refuses it because the dashboard is not this run's - nothing is staged")
+@R.register("an explicit analysis date stops stale input hijacking the dashboard step even if the cleanup were skipped: the committed (newer-dated) CSV is ignored; and a stale date still cannot be staged as this run's")
 def _():
     ws = checkout(); analysis(ws)                                         # NO cleanup: the committed 2026-10-27 files sit next to this run's 2026-10-26 files
-    assert run_step(ws, "build_dashboard")[0] == 0 and listing(os.path.join(ws, "dashboard_out")) == [f"dashboard_{STALE}.html"], listing(os.path.join(ws, "dashboard_out"))
-    code, text = run_step(ws, "stage_deliverables", {"ANALYSIS_DATE": CURRENT}); assert code != 0 and "ERROR" in text and listing(os.path.join(ws, "deliverables")) is None, (code, text[-300:])
+    assert run_step(ws, "build_dashboard", {"ANALYSIS_DATE": CURRENT})[0] == 0 and listing(os.path.join(ws, "dashboard_out")) == [f"dashboard_{CURRENT}.html"], listing(os.path.join(ws, "dashboard_out"))
+    ws = checkout(); analysis(ws)
+    assert run_step(ws, "build_dashboard", {"ANALYSIS_DATE": STALE})[0] == 0 and listing(os.path.join(ws, "dashboard_out")) == [f"dashboard_{STALE}.html"]    # a wrong date builds the wrong dashboard ...
+    code, text = run_step(ws, "stage_deliverables", {"ANALYSIS_DATE": CURRENT}); assert code != 0 and "ERROR" in text and listing(os.path.join(ws, "deliverables")) is None, (code, text[-300:])   # ... which staging refuses
 
 @R.register("the staging step refuses the committed day as the analysis date, and leaves nothing behind (the stale files are gone after the cleanup, so there is nothing to stage)")
 def _():
-    ws = checkout(); run_step(ws, "clear_stale_outputs"); analysis(ws); assert run_step(ws, "build_dashboard")[0] == 0
+    ws = checkout(); run_step(ws, "clear_stale_outputs"); analysis(ws); assert run_step(ws, "build_dashboard", {"ANALYSIS_DATE": CURRENT})[0] == 0
     code, text = run_step(ws, "stage_deliverables", {"ANALYSIS_DATE": STALE}); assert code != 0 and "ERROR" in text and listing(os.path.join(ws, "deliverables")) is None, (code, text[-300:])
 
 @R.register("the date reaches the staging command only as a quoted argument: shell metacharacters in ANALYSIS_DATE are never executed (no marker file appears), the command refuses it with one ERROR line, and nothing is staged")
 def _():
-    ws = checkout(); run_step(ws, "clear_stale_outputs"); analysis(ws); assert run_step(ws, "build_dashboard")[0] == 0; marker = os.path.join(ws, "EXECUTED")
+    ws = checkout(); run_step(ws, "clear_stale_outputs"); analysis(ws); assert run_step(ws, "build_dashboard", {"ANALYSIS_DATE": CURRENT})[0] == 0; marker = os.path.join(ws, "EXECUTED")
     for hostile in (f"{CURRENT}; touch EXECUTED", "$(touch EXECUTED)", f'{CURRENT}" ; touch EXECUTED ; "', "`touch EXECUTED`", f"{CURRENT}\ntouch EXECUTED", f"{CURRENT}\n::error::injected"):
         code, text = run_step(ws, "stage_deliverables", {"ANALYSIS_DATE": hostile})
         assert code != 0 and not os.path.exists(marker) and listing(os.path.join(ws, "deliverables")) is None, (hostile, code, text[-200:])

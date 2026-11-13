@@ -9,10 +9,11 @@ from wf_support import Runner, REPO, load
 da = load("daily_automation")
 BRIDGE = os.path.join(REPO, "tests", "apps_script", "bridge.mjs")
 CODE_GS = os.path.join(REPO, "apps_script", "Code.gs")
-REAL_REPORTS = os.path.join(REPO, "reports")
+REAL_REPORTS = __import__("wf_support").committed_reports()
 SECRET = "unit-test-shared-secret-0123456789"                      # the made-up secret that tests/apps_script/harness.mjs configures
 RUN_ID = "123456789"; RUN_URL = "https://github.com/rizwana-qa/market-data-quality-pipeline/actions/runs/123456789"
-TODAY = date(2026, 10, 28)                                         # the imitated Google clock is 2026-10-28 02:15:30 UTC, so 2026-10-27 is the last completed day
+TODAY = date(2026, 10, 28)
+NOW = __import__("datetime").datetime(2026, 10, 28, 7, 0, 0, tzinfo=__import__("datetime").timezone.utc)   # shortly after the committed report's fetch time (2026-10-28 06:56:33 UTC)                                         # the imitated Google clock is 2026-10-28 02:15:30 UTC, so 2026-10-27 is the last completed day
 HEADINGS = ["Run date", "Asset", "Closing price", "Daily return", "30-day volatility", "30-day drawdown", "Correlation", "Validation status", "Report status", "Workflow run ID"]
 WORK = tempfile.mkdtemp(prefix="contract_"); atexit.register(shutil.rmtree, WORK, True)
 R = Runner("end-to-end contract checks")
@@ -43,12 +44,15 @@ def talking_to_bridge():
 
 def cli(argv, token=SECRET, **extra_env):
     out, err = io.StringIO(), io.StringIO(); env = {"GOOGLE_APPS_SCRIPT_URL": URL, "GOOGLE_APPS_SCRIPT_TOKEN": token, **extra_env}
-    with talking_to_bridge(), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err): code = da.main(argv, env=env, now=TODAY)
+    with talking_to_bridge(), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err): code = da.main(argv, env=env, now=NOW)
     return code, out.getvalue() + err.getvalue()
 
 def prepared(run_id=RUN_ID):
     folder = tempfile.mkdtemp(dir=WORK)
-    code, text = cli(["build-payload", "--reports-dir", REAL_REPORTS, "--out-dir", folder, "--run-id", run_id, "--run-url", RUN_URL.replace(RUN_ID, run_id)]); assert code == 0, text
+    reports = REAL_REPORTS
+    if run_id != RUN_ID:                                                  # the manifest must belong to the run whose payloads are built
+        reports = tempfile.mkdtemp(dir=WORK); [shutil.copy(os.path.join(REAL_REPORTS, n), os.path.join(reports, n)) for n in os.listdir(REAL_REPORTS)]; __import__("wf_support").add_manifest(reports, run_id=run_id)
+    code, text = cli(["build-payload", "--reports-dir", reports, "--out-dir", folder, "--run-id", run_id, "--run-attempt", "1", "--date", "2026-10-27", "--run-url", RUN_URL.replace(RUN_ID, run_id)]); assert code == 0, text
     return folder
 def result(folder, action): return json.load(open(os.path.join(folder, f"{action}_result.json"), encoding="utf-8"))
 def daily_flow(folder):
@@ -141,7 +145,7 @@ def _():
 def _():
     source = open(CODE_GS, encoding="utf-8").read()
     keys = lambda handler: set(re.findall(r"'([a-z_]+)'", re.search(r"function " + handler + r"\(request[^)]*\) \{\n  requireExactKeys_\(request, \[([^\]]*)\]", source).group(1)))
-    payloads = da.build_payloads(da.validate_outputs(REAL_REPORTS, today=TODAY), RUN_ID, RUN_URL)
+    payloads = da.build_payloads(da.validate_outputs(REAL_REPORTS, NOW), RUN_ID, RUN_URL)
     assert keys("handleUpsert_") == set(payloads["upsert_analysis"]) | {"token"} and keys("handleVerify_") == set(payloads["verify_analysis"]) | {"token"}, (keys("handleUpsert_"), set(payloads["upsert_analysis"]))
     assert keys("handleSuccessEmail_") == set(payloads["send_success_email"]) | {"token", "sheet_update"}, keys("handleSuccessEmail_")
     assert set(re.findall(r"^  (\w+): handle\w+_,$", source, re.M)) == {"upsert_analysis", "verify_analysis", "send_success_email", "send_success_report", "notify_failure", "self_check"} == set(da.POST_ACTIONS) | {"notify_failure", "self_check"}
@@ -306,6 +310,34 @@ def _():
     code, text = cli(["notify-failure", "--dir", folder, "--run-id", RUN_ID, "--run-url", RUN_URL, "--outcome", "tests=failure"]); failed = result(folder, "notify_failure")
     assert code == 1 and failed["error"] == "INTERNAL_ERROR" and failed["attempts"] == 3 and state()["mail"] == [] and state()["mail_attempts"] == [], (text, failed)
     control("/_cache_failure", {})
+
+@R.register("run status against the REAL Code.gs: after the complete flow every stage is PASS from this run's own stamped results; the dispatch stage says accepted by MailApp, never delivered; the same folder judged as another run is INCONCLUSIVE")
+def _():
+    reset(); folder = prepared(); assert report_flow(folder) == [0, 0, 0]
+    assert cli(["validate", "--reports-dir", REAL_REPORTS, "--out-dir", folder])[0] == 0
+    stamp = {"run_id": RUN_ID, "run_attempt": 1, "analysis_date": "2026-10-27"}
+    for action in ("upsert_analysis", "verify_analysis", "send_success_report"): assert result(folder, action)["run_context"] == stamp, action      # the client stamped each reply with this run
+    outcomes = sum((["--outcome", o] for o in ("analysis=success", "validate_outputs=success", "build_payload=success", "post_to_sheet=success", "verify_sheet=success", "send_success_email=success")), [])
+    code, text = cli(["summarize-run", "--dir", folder, "--run-id", RUN_ID, "--run-attempt", "1"] + outcomes); assert code == 0, text
+    s = json.load(open(os.path.join(folder, "run_status.json"), encoding="utf-8")); assert s["overall"] == "PASS" and all(v["outcome"] == "PASS" for v in s["stages"].values()), s
+    assert "accepted by MailApp" in json.dumps(s) and "delivered" not in json.dumps(s).lower()
+    code, text = cli(["summarize-run", "--dir", folder, "--run-id", "999", "--run-attempt", "1"] + outcomes); other = json.load(open(os.path.join(folder, "run_status.json"), encoding="utf-8"))
+    assert code == 0 and other["overall"] == "INCONCLUSIVE" and other["stages"]["sheets_update"]["outcome"] == "INCONCLUSIVE" and other["stages"]["email_dispatch_acceptance"]["outcome"] == "INCONCLUSIVE", other
+
+@R.register("evidence-backed report against the REAL Code.gs, both payload shapes: the client's real report (comparison and validation) is accepted and its HTML states the evidence; the OLD shape (without the two parts) is still accepted and shows only completeness; a validation PASS without complete evidence, another run's validation, or a comparison that contradicts itself is refused")
+def _():
+    import copy
+    reset(); folder = prepared(); sheet_ready(folder); stored = stored_report(folder); assert "comparison" in stored["report"] and stored["report"]["validation"]["overall"] == "PASS"
+    body = dict(stored, token=SECRET, artifact_url=ARTIFACT_URL, sheet_update={"rows_inserted": 2, "rows_updated": 0})
+    refusals = (("PASS with a missing instance", lambda d: d["report"]["validation"].update(instances_passed=620)), ("PASS with a missing field", lambda d: d["report"]["validation"].update(fields_validated=16)), ("another run's validation", lambda d: d["report"]["validation"].update(run_id="5")),
+                ("contradicting comparison", lambda d: d["report"]["comparison"].update(stronger="ETH" if d["report"]["comparison"]["stronger"] == "BTC" else "BTC")), ("markup in an exception", lambda d: d["report"]["validation"].update(overall="FAIL", exceptions=[{"rule_id": "CND-VWAP", "severity": "ERROR", "outcome": "FAIL", "field": "vwap", "explanation": "<b>x</b>"}])))
+    for name, change in refusals:
+        data = copy.deepcopy(body); change(data); reply = raw_post(data); assert reply["success"] is False and reply["error"] == "INVALID_PAYLOAD" and reply["email_status"] == "not_attempted", (name, reply)
+    assert state()["mail"] == [], "a refused request must send nothing"
+    old = copy.deepcopy(body); old["report"].pop("comparison"); old["report"].pop("validation"); reply = raw_post(old); assert reply["email_status"] == "sent", reply
+    html_old = state()["mail"][-1]["htmlBody"]; assert "Data completeness: 17 of 17 fields populated" in html_old and "Data validation: PASS" not in html_old and "stronger performer" not in html_old
+    reset(); folder = prepared(); sheet_ready(folder); assert cli(["post", "--action", "send_success_report", "--dir", folder, "--artifact-url", ARTIFACT_URL])[0] == 0
+    html = state()["mail"][-1]["htmlBody"]; assert "Data validation: PASS (17 of 17 fields validated)" in html and "621 of 621" in html and "stronger performer over the 30-day window, ahead by" in html and "Analyst context: correlation, 7 days" in html and "PASSED" not in html
 
 if bridge: bridge.kill()
 R.finish()

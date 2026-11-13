@@ -16,7 +16,9 @@ import struct
 import zlib
 from datetime import datetime, timezone
 
+import candle_rules
 import dashboard
+import run_evidence
 
 WINDOW_DAYS = 30
 CHART_IDS = ("indexed", "returns", "drawdown")                  # price indexed to 100, daily returns, drawdown from the highest close
@@ -41,6 +43,15 @@ ASSET_KEYS = {"return_7d", "return_14d", "return_30d", "volatility_annualised", 
 PAIR_KEYS = {"volatility_ratio", "joint_negative_days", "overlap_share"}
 META_KEYS = {"rows", "first_date", "data_fetched", "generated_at"}
 REPORT_KEYS = {"meta", "assets", "pair", "coverage", "charts"}
+OPTIONAL_KEYS = {"comparison", "validation"}
+COMPARISON_KEYS = {"stronger", "spread_pp", "correlation_7d", "correlation_14d"}
+VALIDATION_KEYS = {"run_id", "overall", "fields_total", "fields_validated", "instances_expected", "instances_evaluated", "instances_passed", "checks_total", "checks_passed", "assumptions", "exceptions"}
+EXCEPTION_KEYS = {"rule_id", "severity", "outcome", "field", "explanation"}
+KNOWN_ASSUMPTIONS = ("A1",)
+MAX_EXCEPTIONS = 5
+MAX_EXCEPTION_TEXT = 200
+EQUAL_BELOW_PP = 0.005                                          # two 30-day returns that differ by less than half a hundredth of a percentage point are reported as equal (they print identically at two decimals)
+RULE_ID_TEXT = re.compile(r"[A-Z]{2,4}(-[A-Z0-9]{1,8}){1,3}")
 DATE_TEXT = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -207,6 +218,64 @@ def _asset_figures(asset, metrics, shorter_windows):
     }
 
 
+def comparison_of(btc_30d, eth_30d, correlation_7d, correlation_14d):
+    """The relative performance of the two assets over the 30-day window, and the optional short-window correlations. All calculated here; the web app only shows them.
+
+    spread_pp = (ETH 30-day return - BTC 30-day return) x 100: percentage points, signed (positive means ETH was ahead), rounded to 6 decimals. The inputs are the two published 30-day returns
+    (the return_30d figures). stronger is the asset with the larger 30-day return, or 'equal' when the spread is below 0.005 points. The 7- and 14-day correlations are the existing Pearson
+    figures of those windows (None when a series is constant); they rest on 7 and 14 observations and are context for analysts, never a headline.
+    """
+    spread_pp = round((eth_30d - btc_30d) * 100, 6)
+    stronger = "equal" if abs(spread_pp) < EQUAL_BELOW_PP else "ETH" if spread_pp > 0 else "BTC"
+    short = lambda value: None if value is None else round(value, 6)
+    return {"stronger": stronger, "spread_pp": spread_pp, "correlation_7d": short(correlation_7d), "correlation_14d": short(correlation_14d)}
+
+
+def _plain(text, limit):
+    """Text that is safe to show: no control characters and no angle brackets, shortened, never empty."""
+    cleaned = re.sub(r"[\x00-\x1f\x7f<>]", " ", str(text)).strip()
+    return (cleaned[:limit].strip() or "no detail")
+
+
+def _exception_entry(rule_id, severity, outcome, field, explanation):
+    return {"rule_id": rule_id, "severity": severity, "outcome": outcome, "field": _plain(field or "window", 40), "explanation": _plain(explanation, MAX_EXCEPTION_TEXT)}
+
+
+def build_validation(outputs):
+    """The evidence-backed validation result for the e-mail, or None when there is no evidence to base one on (then the e-mail says only what completeness supports).
+
+    It combines the producer's envelope from the manifest, the consumer's own recomputation of the candle ledger from the CSV, and the consumer's verification checks. The overall is PASS only
+    when every one of them is a complete PASS, all 17 fields are validated, every planned instance was evaluated exactly once and passed, and no exception exists; anything else is the worst
+    state found (never PASS), and missing or incomplete evidence is INCONCLUSIVE at best.
+    """
+    manifest, verification = outputs.get("manifest"), outputs.get("verification")
+    if not isinstance(manifest, dict) or not isinstance(verification, dict):
+        return None
+    dataset, envelope = outputs["dataset"], manifest["envelope"]
+    consumer = dataset["candle_ledger"]
+    csv_ok = any(check["id"] == "CON-CSV" and check["outcome"] == "PASS" for check in verification["checks"])
+    validated, total = candle_rules.fields_validated(consumer, csv_ok)
+    passed = sum(row["pass"] for row in consumer["rules"])
+    checks_total, checks_passed = len(verification["checks"]), sum(1 for check in verification["checks"] if check["outcome"] == "PASS")
+    assumptions = sorted(set(consumer["assumptions_applied"]) | set(envelope.get("assumptions_applied", [])))
+    unknown = [a for a in assumptions if a not in KNOWN_ASSUMPTIONS]
+    overall = run_evidence.combine([verification["overall"], run_evidence.envelope_overall(envelope), candle_rules.ledger_overall(consumer)])
+    exceptions = []
+    for family in envelope["families"].values():
+        exceptions += [_exception_entry(e["rule_id"], e["severity"], e["outcome"], e.get("field") or e.get("scope"), e.get("explanation") or e.get("actual")) for e in family["non_pass"]]
+    exceptions += [_exception_entry(e["rule_id"], e["severity"], e["outcome"], e.get("field") or e.get("scope"), e.get("explanation") or e.get("actual")) for e in consumer["non_pass"]]
+    exceptions += [_exception_entry(check["id"], "ERROR", check["outcome"], "run", check["explanation"]) for check in verification["checks"] if check["outcome"] != "PASS"]
+    complete = (validated == total and consumer["expected_instances"] > 0 and consumer["evaluated"] == consumer["expected_instances"] and passed == consumer["expected_instances"]
+                and checks_total > 0 and checks_passed == checks_total and not unknown and not exceptions)
+    if overall == candle_rules.PASS and not complete:
+        overall = candle_rules.INCONCLUSIVE
+    if overall != candle_rules.PASS and not exceptions:
+        exceptions.append(_exception_entry("MAN-EVIDENCE", "ERROR", overall, "run", "the validation evidence is not a complete PASS"))
+    return {"run_id": manifest["run_id"], "overall": overall, "fields_total": total, "fields_validated": validated, "instances_expected": consumer["expected_instances"],
+            "instances_evaluated": consumer["evaluated"], "instances_passed": passed, "checks_total": checks_total, "checks_passed": checks_passed,
+            "assumptions": [a for a in assumptions if a in KNOWN_ASSUMPTIONS], "exceptions": exceptions[:MAX_EXCEPTIONS]}
+
+
 def _fetched_time(report_text):
     found = dashboard.FETCHED_LINE.search(report_text)
     if found is None:
@@ -233,7 +302,11 @@ def build_report(outputs, generated_at):
         "pair": {"volatility_ratio": metrics["volatility_ratio"], "joint_negative_days": metrics["joint_negative_days"], "overlap_share": metrics["down_day_overlap_share"]},
         "coverage": _coverage(dataset),
         "charts": [_chart_entry(kind, *series[kind]) for kind in CHART_IDS],
+        "comparison": comparison_of(metrics["cumulative_return"]["BTC"], metrics["cumulative_return"]["ETH"], shorter[7]["correlation"], shorter[14]["correlation"]),
     }
+    validation = build_validation(outputs)
+    if validation is not None:                                                      # without evidence there is no validation part, and the e-mail never shows a PASS
+        report["validation"] = validation
     check_report(report)
     return report
 
@@ -290,9 +363,45 @@ def _keys(value, expected, label):
         raise EmailReportError(f"{label} does not have exactly the expected fields")
 
 
+def _check_comparison(comparison):
+    _keys(comparison, COMPARISON_KEYS, "comparison")
+    _finite(comparison["spread_pp"], "comparison.spread_pp", low=-100000, high=100000)
+    stronger, spread = comparison["stronger"], comparison["spread_pp"]
+    if stronger not in ("BTC", "ETH", "equal") or (stronger == "ETH" and not spread > 0) or (stronger == "BTC" and not spread < 0) or (stronger == "equal" and abs(spread) >= EQUAL_BELOW_PP):
+        raise EmailReportError("comparison.stronger does not agree with comparison.spread_pp")
+    for key in ("correlation_7d", "correlation_14d"):
+        _finite(comparison[key], f"comparison.{key}", low=-1, high=1, nullable=True)
+
+
+def _check_validation(validation):
+    _keys(validation, VALIDATION_KEYS, "validation")
+    if validation["overall"] not in (candle_rules.PASS, candle_rules.FAIL, candle_rules.BLOCKED, candle_rules.NOT_RUN, candle_rules.INCONCLUSIVE):
+        raise EmailReportError("validation.overall is not one of the five outcomes")
+    if not isinstance(validation["run_id"], str) or not run_evidence.valid_identity(validation["run_id"], 1):
+        raise EmailReportError("validation.run_id is not a run id")
+    for key in ("fields_total", "fields_validated", "instances_expected", "instances_evaluated", "instances_passed", "checks_total", "checks_passed"):
+        _finite(validation[key], f"validation.{key}", low=0, integer=True)
+    if (validation["fields_total"] != len(dashboard.EXPECTED_COLUMNS) or validation["fields_validated"] > validation["fields_total"] or validation["instances_passed"] > validation["instances_evaluated"]
+            or validation["instances_evaluated"] > validation["instances_expected"] or validation["checks_passed"] > validation["checks_total"]):
+        raise EmailReportError("the validation counts are not consistent")
+    if not isinstance(validation["assumptions"], list) or any(a not in KNOWN_ASSUMPTIONS for a in validation["assumptions"]) or not isinstance(validation["exceptions"], list) or len(validation["exceptions"]) > MAX_EXCEPTIONS:
+        raise EmailReportError("validation.assumptions or validation.exceptions is not valid")
+    for entry in validation["exceptions"]:
+        _keys(entry, EXCEPTION_KEYS, "a validation exception")
+        if (not isinstance(entry["rule_id"], str) or not RULE_ID_TEXT.fullmatch(entry["rule_id"]) or entry["severity"] not in ("ERROR", "WARNING") or entry["outcome"] not in ("FAIL", "BLOCKED", "NOT RUN", "INCONCLUSIVE")
+                or not isinstance(entry["field"], str) or not 1 <= len(entry["field"]) <= 40 or not isinstance(entry["explanation"], str) or not 1 <= len(entry["explanation"]) <= MAX_EXCEPTION_TEXT
+                or re.search(r"[\x00-\x1f\x7f<>]", entry["field"] + entry["explanation"])):
+            raise EmailReportError("a validation exception is not valid")
+    if validation["overall"] == candle_rules.PASS and not (
+            validation["fields_validated"] == validation["fields_total"] and validation["instances_expected"] > 0 and validation["instances_evaluated"] == validation["instances_expected"]
+            and validation["instances_passed"] == validation["instances_expected"] and validation["checks_total"] > 0 and validation["checks_passed"] == validation["checks_total"] and not validation["exceptions"]):
+        raise EmailReportError("a validation PASS needs complete evidence: every field, instance and check passed and no exception")
+
+
 def check_report(report):
     """Raises EmailReportError (one line) unless the report is complete, plausible, safe to send and small enough for the web app's request limit."""
-    _keys(report, REPORT_KEYS, "the report")
+    if not isinstance(report, dict) or not REPORT_KEYS <= set(report) or set(report) - REPORT_KEYS - OPTIONAL_KEYS:
+        raise EmailReportError("the report does not have exactly the expected fields")
     _keys(report["meta"], META_KEYS, "meta")
     _finite(report["meta"]["rows"], "meta.rows", low=dashboard.WINDOWS[0] + 1, integer=True)
     _date(report["meta"]["first_date"], "meta.first_date")
@@ -343,6 +452,10 @@ def check_report(report):
         problem = _png_problem(data)
         if problem:
             raise EmailReportError(f"the {expected} chart is not a valid image: {problem}")
+    if "comparison" in report:
+        _check_comparison(report["comparison"])
+    if "validation" in report:
+        _check_validation(report["validation"])
     try:
         size = len(json.dumps(report, allow_nan=False))
     except ValueError:

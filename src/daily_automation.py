@@ -65,6 +65,7 @@ STAGE_ORDER = [
     "verify_sheet",
     "upload_deliverables",
     "send_success_email",
+    "summarize_run",
     "upload_artifacts",
 ]
 
@@ -75,6 +76,7 @@ SERVER_STAGE = {
     "publish_pages": "upload_artifacts",
     "stage_deliverables": "validate_outputs",
     "upload_deliverables": "upload_artifacts",
+    "summarize_run": "upload_artifacts",
 }
 # ^ apps_script/Code.gs accepts only the stage names in its own STAGES list. A workflow step it does not know is reported as the nearest stage it does know; the real step name stays in the error summary.
 #   Every other step name is sent unchanged. Nothing is added to Code.gs, so the deployed web app needs no change.
@@ -102,6 +104,7 @@ MAX_REQUEST_CHARS = 19000                                       # the web app re
 REQUEST_EXTRAS_CHARS = 400                                      # what is added when a report request is posted: the token, the artifact link and the sheet counts
 REPORT_REQUEST_KEYS = {"action", "analysis_date", "rows", "run_id", "workflow_url", "validation_status", "summary", "report", "sheet_update", "artifact_url"}
 REPORT_PARTS = {"meta", "assets", "pair", "coverage", "charts"}
+REPORT_OPTIONAL_PARTS = {"comparison", "validation"}               # sent by this client; an older client sends neither, and the web app accepts both shapes
 REPORT_CHART_IDS = ["indexed", "returns", "drawdown"]
 MAX_CHART_BYTES = 6000
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -192,30 +195,76 @@ def utc_today(now):
     return now
 
 
-def validate_outputs(reports_dir, today):
-    """Check the report and CSV of the last completed UTC day with the project's own validators. Returns what the payload needs."""
+def _run_evidence():
+    import run_evidence                            # imported here: only the commands that read the reports need it; the commands that hold the secrets never load it
+    return run_evidence
+
+
+def current_moment(now):
+    """The moment a command runs: the real clock unless a test passes one. A bare date is passed through (only validate_outputs insists on a datetime)."""
+    return utc_now() if now is None else now
+
+
+def find_manifest_date(folder, date_text):
+    """The analysis date of the manifest to verify. With --date, exactly that manifest; without it there must be exactly one manifest (CI clears the folder first)."""
+    evidence = _run_evidence()
+    found = sorted(match.group(1) for name in os.listdir(folder) for match in [evidence.MANIFEST_PATTERN.match(name)] if match)
+    if date_text is not None:
+        if date_text not in found:
+            raise AutomationError(f"{evidence.MANIFEST_NAME.format(date=date_text)} was not produced; the manifest is written last, so a set without it is not a completed run")
+        return date_text
+    if not found:
+        raise AutomationError("no manifest (report_<date>_manifest.json) was produced; the manifest is written last, so a set without it is not a completed run")
+    if len(found) > 1:
+        raise AutomationError(f"more than one manifest is present ({', '.join(found)}); give the run's analysis date explicitly with --date")
+    return found[0]
+
+
+def validate_outputs(reports_dir, now, date=None):
+    """Check the report, CSV and manifest of one run with the project's own validators. Returns what the payload needs.
+
+    The analysis date is the one the producer wrote into the manifest (it generated it from a single clock reading); it is never derived from a clock here. `now` (a datetime) is used only
+    to measure the age of the artifacts. With `date` (an explicit YYYY-MM-DD from the caller) that manifest is verified; without it the folder must hold exactly one.
+    The manifest is required: it is written last, so a set without a valid, matching manifest is not a completed run. The consumer's verification (structure, both hashes, the dates, the age,
+    a recomputation of the candle ledger from the CSV) is returned as a SEPARATE record under 'verification'; it is never part of the manifest. When it is not a PASS the AutomationError
+    carries it as .verification.
+    """
+    if not isinstance(now, datetime):
+        raise AutomationError("the time of the check must be a date and time, to measure the age of the artifacts")
     dashboard = _dashboard()
-    expected = (today - timedelta(days=1)).isoformat()
+    evidence = _run_evidence()
     folder = Path(reports_dir)
     if not folder.is_dir():
         raise AutomationError(f"the reports folder {folder.name!r} does not exist, so no report was produced")
+    expected = find_manifest_date(folder, date)
     report_path = folder / f"report_{expected}.md"
     csv_path = folder / f"report_{expected}_data.csv"
-    for path in (report_path, csv_path):
+    manifest_path = folder / evidence.MANIFEST_NAME.format(date=expected)
+    for path in (report_path, csv_path, manifest_path):
         if not path.is_file():
-            raise AutomationError(f"{path.name} was not produced (expected for the last completed UTC day, {expected})")
+            raise AutomationError(f"{path.name} was not produced (the manifest of {expected} exists, so the set is incomplete)")
     try:
-        csv_text = dashboard.read_text_limited(csv_path, dashboard.MAX_CSV_BYTES, "CSV")
-        report_text = dashboard.read_text_limited(report_path, dashboard.MAX_REPORT_BYTES, "report")
+        csv_bytes = dashboard.read_bytes_limited(csv_path, dashboard.MAX_CSV_BYTES, "CSV")
+        report_bytes = dashboard.read_bytes_limited(report_path, dashboard.MAX_REPORT_BYTES, "report")
+        manifest_bytes = dashboard.read_bytes_limited(manifest_path, evidence.MAX_MANIFEST_BYTES, "manifest")
+        csv_text = dashboard.decode_text(csv_bytes, "CSV")
+        report_text = dashboard.decode_text(report_bytes, "report")
         dataset = dashboard.parse_dataset(csv_text)
-        dashboard.check_against_report(dataset, report_text)
+        facts = dashboard.check_against_report(dataset, report_text)
         metrics = dashboard.window_metrics(dataset, WINDOW_DAYS)
     except dashboard.DashboardInputError as error:
         raise AutomationError(f"validation failed: {error}")
     last_date = dataset["dates"][-1]
     if last_date != expected:
-        raise AutomationError(f"the CSV ends on {last_date} but the file names and the last completed UTC day say {expected}")
-    return {"date": last_date, "dataset": dataset, "metrics": metrics, "report_path": report_path, "csv_path": csv_path, "report_text": report_text}
+        raise AutomationError(f"the CSV ends on {last_date} but the file names and the manifest say {expected}")
+    verification = evidence.verify_artifacts(manifest_bytes, csv_path.name, csv_bytes, report_path.name, report_bytes, dataset, facts["data_fetched"], date, now)
+    if verification["overall"] != "PASS":
+        failed = next(check for check in verification["checks"] if check["outcome"] != "PASS")
+        error = AutomationError(f"validation failed: {failed['id']}: {failed['explanation']}")
+        error.verification = verification
+        raise error
+    return {"date": last_date, "dataset": dataset, "metrics": metrics, "report_path": report_path, "csv_path": csv_path, "report_text": report_text,
+            "manifest": evidence.parse_manifest(manifest_bytes), "verification": verification}
 
 
 # ---------------------------------------------------------------- the payloads
@@ -248,7 +297,7 @@ def check_report_request(payload):
         raise AutomationError("the success report request does not have exactly the expected fields")
     check_run_url(payload["workflow_url"], check_run_id(payload["run_id"]))
     report = payload["report"]
-    if not isinstance(report, dict) or set(report) != REPORT_PARTS or not isinstance(report["charts"], list) or len(report["charts"]) != len(REPORT_CHART_IDS):
+    if not isinstance(report, dict) or not REPORT_PARTS <= set(report) or set(report) - REPORT_PARTS - REPORT_OPTIONAL_PARTS or not isinstance(report["charts"], list) or len(report["charts"]) != len(REPORT_CHART_IDS):
         raise AutomationError("the success report is incomplete: it needs its figures and exactly three charts")
     for chart, expected in zip(report["charts"], REPORT_CHART_IDS):
         encoded = chart.get("png_base64") if isinstance(chart, dict) else None
@@ -267,6 +316,22 @@ def _finite(value, label):
     return number + 0.0                            # turns -0.0 into 0.0
 
 
+def sheet_statuses(outputs):
+    """(Validation status, Report status) for the sheet, derived from THIS run's evidence: the producer envelope, the consumer verification and the candle ledger recomputed from the CSV.
+
+    The sheet's vocabulary is PASSED / FAILED (and GENERATED / FAILED), fixed by its heading contract. PASSED needs a complete PASS. A FAIL is recorded as FAILED. Missing, incomplete, blocked,
+    not-run or inconclusive evidence has no honest value in that vocabulary, so no row is written at all: it is never recorded as PASSED.
+    """
+    validation = _email_report().build_validation(outputs)
+    if validation is None:
+        raise AutomationError("there is no validation evidence for this run (manifest and consumer verification), so no sheet row is written")
+    if validation["overall"] == "PASS":
+        return "PASSED", "GENERATED"
+    if validation["overall"] == "FAIL":
+        return "FAILED", "FAILED"
+    raise AutomationError(f"the validation of this run is {validation['overall']}, which the sheet cannot record as a status, so no sheet row is written")
+
+
 def build_rows(outputs, run_id):
     """One sheet row per asset. Daily return is a fraction, volatility is the daily sample standard deviation (not annualised), drawdown is a negative fraction."""
     run_id = check_run_id(run_id)
@@ -275,6 +340,7 @@ def build_rows(outputs, run_id):
     if correlation is None or not math.isfinite(correlation):
         raise AutomationError("the correlation is undefined (a series is constant), so the sheet rows cannot be written")
     correlation = max(-1.0, min(1.0, float(correlation)))
+    validation_status, report_status = sheet_statuses(outputs)
     rows = []
     for asset in _dashboard().ASSETS:
         rows.append({
@@ -285,8 +351,8 @@ def build_rows(outputs, run_id):
             "30-day volatility": _finite(metrics["volatility"][asset]["daily"], f"{asset} volatility"),
             "30-day drawdown": min(0.0, _finite(metrics["max_drawdown"][asset][0], f"{asset} drawdown")),
             "Correlation": correlation,
-            "Validation status": "PASSED",
-            "Report status": "GENERATED",
+            "Validation status": validation_status,
+            "Report status": report_status,
             "Workflow run ID": run_id,
         })
     return rows
@@ -313,7 +379,7 @@ def build_payloads(outputs, run_id, run_url):
     return {
         "upsert_analysis": {"action": "upsert_analysis", "analysis_date": date_text, "rows": rows},
         "verify_analysis": {"action": "verify_analysis", "analysis_date": date_text, "rows": rows},
-        "send_success_email": {"action": "send_success_email", "analysis_date": date_text, "rows": rows, "run_id": run_id, "workflow_url": run_url, "validation_status": "PASSED", "summary": summary},
+        "send_success_email": {"action": "send_success_email", "analysis_date": date_text, "rows": rows, "run_id": run_id, "workflow_url": run_url, "validation_status": rows[0]["Validation status"], "summary": summary},
     }
 
 
@@ -389,6 +455,24 @@ def _post_once(url, body):
     if not isinstance(parsed, dict):
         raise AutomationError("the web app reply is not a JSON object", delivery="unknown")
     return parsed
+
+
+CAPABILITY_FLAG = "report_evidence_supported"       # set by an updated Code.gs in its self_check reply; an older deployed script does not send it
+
+
+def preflight_web_app(url, token):
+    """Before the sheet is updated: ask the web app (the read-only self_check action: no row written, no e-mail sent) whether it supports the evidence-backed report this run will send.
+
+    An outdated script would refuse that report at the e-mail step, after the sheet was already updated. Raises AutomationError with delivery not_sent (nothing was written) if the script
+    answers without the capability, or if no answer can be obtained.
+    """
+    try:
+        reply, attempts = post_action(url, {"action": "self_check", "expected_sheet_name": EXPECTED_SHEET_NAME}, token)
+    except AutomationError as error:
+        raise AutomationError("the compatibility preflight could not be completed, so the sheet was not touched: " + str(error), attempts=error.attempts, delivery="not_sent")
+    cleaned = clean_self_check(reply, attempts)
+    if "properties" in cleaned and cleaned.get(CAPABILITY_FLAG) is not True:         # a normal self_check answer without the flag: an outdated script (an error answer, e.g. a wrong token, is left to the first request to report)
+        raise AutomationError("the deployed Apps Script does not support the evidence-backed report this run sends (deploy the updated Code.gs first); the sheet was not touched", attempts=attempts, delivery="not_sent")
 
 
 def post_action(url, payload, token, attempts=MAX_ATTEMPTS):
@@ -558,8 +642,186 @@ def summary_lines(action, result, problems):
 
 
 # ---------------------------------------------------------------- commands
-def command_validate(args, env, today):
-    outputs = validate_outputs(args.reports_dir, today)
+# ---------------------------------------------------------------- run status: what each stage really did, judged from evidence that belongs to THIS run
+STATUS_STAGES = ("analysis", "outputs_persisted", "sheets_update", "sheets_verification", "email_payload_generation", "email_dispatch_acceptance")
+STATUS_FILE = "run_status.json"
+EMAIL_ACCEPTED_STATUSES = {"sent", "sent_dedup_failed", "skipped_duplicate"}
+RUN_CONTEXT_FILE = "run_context.json"
+
+
+def check_run_attempt(value):
+    text = str(value)
+    if not re.fullmatch(r"[0-9]{1,6}", text) or int(text) < 1:
+        raise AutomationError("the run attempt must be a whole number of at least 1")
+    return int(text)
+
+
+def load_run_context(folder):
+    """The run context written by build-payload (run id, attempt, analysis date, and the SHA-256 of every payload file), or None if it is missing or unreadable."""
+    path = Path(folder) / RUN_CONTEXT_FILE
+    if not path.is_file():
+        return None
+    try:
+        data = read_json(path)
+    except (OSError, ValueError):
+        return None
+    keys = {"schema_version", "run_id", "run_attempt", "analysis_date", "payloads"}
+    return data if isinstance(data, dict) and set(data) == keys and isinstance(data["payloads"], dict) else None
+
+
+def _file_sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _stamp_of(context):
+    return None if context is None else {"run_id": context["run_id"], "run_attempt": context["run_attempt"], "analysis_date": context["analysis_date"]}
+
+
+def _belongs_to(record, identity):
+    """True only if a result or verification record carries exactly this run's id, attempt and analysis date. A record without the stamp (an older run's file) does not."""
+    stamp = record.get("run_context") if isinstance(record, dict) and "run_context" in record else record
+    return isinstance(stamp, dict) and all(stamp.get(key) == identity[key] for key in ("run_id", "run_attempt", "analysis_date"))
+
+
+def _stage_record(outcome, evidence, note):
+    return {"outcome": outcome, "evidence": evidence, "note": note}
+
+
+def judge_stage(step_outcome, upstream_bad, judge):
+    """The five-valued outcome of one stage. `judge()` returns (outcome, evidence, note) for a step that reported success, and is only consulted then; a missing step outcome is NOT RUN.
+
+    A step that was skipped is BLOCKED if an earlier stage already failed or could not be confirmed, otherwise NOT RUN. A cancelled step is INCONCLUSIVE. File presence alone never gives PASS.
+    """
+    if step_outcome == "success":
+        return _stage_record(*judge())
+    if step_outcome == "failure":
+        return _stage_record("FAIL", [f"step outcome: {step_outcome}"], "the step failed")
+    if step_outcome == "cancelled":
+        return _stage_record("INCONCLUSIVE", [f"step outcome: {step_outcome}"], "the step was cancelled while it may have been running")
+    if step_outcome == "skipped":
+        return _stage_record("BLOCKED" if upstream_bad else "NOT RUN", ["step outcome: skipped"], "an earlier stage did not complete" if upstream_bad else "the stage did not run")
+    return _stage_record("NOT RUN", ["no step outcome was given"], "no evidence that the stage ran")
+
+
+def build_run_status(folder, identity, outcomes, moment):
+    """run_status.json as plain data. identity = {run_id, run_attempt, analysis_date}; analysis_date comes from the verified manifest (the consumer verification record), never from a clock."""
+    folder = Path(folder)
+    stages = {}
+    bad = lambda: any(stage["outcome"] in ("FAIL", "INCONCLUSIVE", "BLOCKED") for stage in stages.values())
+
+    def verification_judge():
+        record = _read_record(folder / _run_evidence().VERIFICATION_NAME)
+        if record is None or not _belongs_to(record, identity):
+            return "INCONCLUSIVE", [_run_evidence().VERIFICATION_NAME + ": missing or not from this run"], "the consumer verification record cannot be tied to this run"
+        if record.get("overall") != "PASS":
+            return "FAIL", [f"consumer verification: {record.get('overall')}"], "the consumer verification did not pass"
+        return "PASS", ["consumer_verification.json: PASS for this run"], "the manifest, both hashes, the dates and the candle ledger were verified"
+
+    stages["analysis"] = judge_stage(outcomes.get("analysis"), False, lambda: ("PASS", ["step outcome: success"], "the analysis step finished"))
+    stages["outputs_persisted"] = judge_stage(outcomes.get("validate_outputs") if outcomes.get("analysis") == "success" else outcomes.get("analysis"), bad(), verification_judge)
+    if outcomes.get("analysis") == "success" and outcomes.get("validate_outputs") == "failure":
+        stages["outputs_persisted"] = _stage_record("FAIL", ["validate_outputs step outcome: failure"], "the outputs were written but did not pass the consumer verification")
+
+    def result_judge(step, action, passes, note):
+        def judge():
+            record = load_result(folder, action)
+            if record is None or not _belongs_to(record, identity):
+                return "INCONCLUSIVE", [f"{action}_result.json: missing or not from this run"], f"the step reported success but its result cannot be tied to this run"
+            outcome, extra = passes(record)
+            return outcome, [f"step outcome: success", f"{action}_result.json: this run"] + extra, note if outcome == "PASS" else "the reply does not confirm the stage"
+        return judge
+
+    def update_pass(record):
+        ok = record.get("success") is True and record.get("sheet_status") == "ok" and record.get("write_confirmed") is True
+        return ("PASS", ["write confirmed"]) if ok else ("INCONCLUSIVE", [f"sheet_status: {record.get('sheet_status')}"])
+
+    def verify_pass(record):
+        return ("PASS", ["rows read back and matching"]) if record.get("success") is True and record.get("matches") is True else ("INCONCLUSIVE", ["read-back not confirmed"])
+
+    def dispatch_pass(record):
+        status = record.get("email_status")
+        if record.get("success") is True and status in EMAIL_ACCEPTED_STATUSES:
+            return "PASS", [f"email_status: {status}", f"email_format: {record.get('email_format')}"]
+        if status == "send_outcome_unknown":
+            return "INCONCLUSIVE", [f"email_status: {status}"]
+        return "FAIL", [f"email_status: {status}", f"error: {record.get('error')}"]
+
+    stages["sheets_update"] = judge_stage(outcomes.get("post_to_sheet"), bad(), result_judge("post_to_sheet", "upsert_analysis", update_pass, "the rows were written and the write was confirmed"))
+    stages["sheets_verification"] = judge_stage(outcomes.get("verify_sheet"), bad(), result_judge("verify_sheet", "verify_analysis", verify_pass, "the rows were read back and match"))
+
+    def payload_judge():
+        context = load_run_context(folder)
+        path = folder / "send_success_report.json"
+        if not path.is_file():
+            return "FAIL", ["send_success_report.json: not generated"], "the step succeeded but the HTML report payload was not generated (the plain payloads were written)"
+        if context is None or not _belongs_to(context, identity) or context["payloads"].get(path.name) != _file_sha256(path):
+            return "INCONCLUSIVE", ["send_success_report.json: cannot be tied to this run"], "the payload file does not match this run's context"
+        return "PASS", ["send_success_report.json: matches this run's context"], "the HTML report payload was generated for this run"
+
+    stages["email_payload_generation"] = judge_stage(outcomes.get("build_payload"), bad(), payload_judge)
+    stages["email_dispatch_acceptance"] = judge_stage(outcomes.get("send_success_email"), bad(), result_judge("send_success_email", REPORT_ACTION, dispatch_pass,
+                                                      "the message was accepted by MailApp (this is not confirmation that it reached a mailbox)"))
+    order = [stages[name]["outcome"] for name in STATUS_STAGES]
+    precedence = ("FAIL", "INCONCLUSIVE", "BLOCKED", "NOT RUN")
+    overall = next((outcome for outcome in precedence if outcome in order), "PASS")
+    if overall == "PASS":
+        summary = "all stages passed; the message was accepted by MailApp (delivery to a mailbox is not confirmed)"
+    elif stages["sheets_update"]["outcome"] == "PASS" and stages["sheets_verification"]["outcome"] == "PASS":
+        summary = "PARTIAL: Sheets updated and verified; " + "; ".join(f"{name.replace('_', ' ')}: {stages[name]['outcome']}" for name in STATUS_STAGES[4:] if stages[name]["outcome"] != "PASS")
+    else:
+        summary = "NOT COMPLETE: " + "; ".join(f"{name.replace('_', ' ')}: {stages[name]['outcome']}" for name in STATUS_STAGES if stages[name]["outcome"] != "PASS")
+    diagnostics = "not_applicable" if outcomes.get("analysis") == "success" else ("persisted" if (folder / _run_evidence().DIAGNOSTIC_NAME).is_file() else "not_persisted")
+    return {"schema_version": 1, "run_id": identity["run_id"], "run_attempt": identity["run_attempt"], "analysis_date": identity["analysis_date"],
+            "generated_at": moment.strftime("%Y-%m-%d %H:%M:%S UTC"), "overall": overall, "summary": summary, "diagnostics": diagnostics, "stages": stages}
+
+
+def _read_record(path):
+    try:
+        data = read_json(path)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def command_summarize_run(args, env, moment):
+    """Write run_status.json: one explicit outcome per stage, from the step outcomes and from result files that carry THIS run's id, attempt and analysis date.
+
+    The analysis date is taken from the consumer verification record (itself derived from the verified manifest). It is a diagnostic: it never changes the pipeline's own outcome, and it exits 0
+    (a problem writing it is only a warning).
+    """
+    run_id, attempt = check_run_id(args.run_id), check_run_attempt(args.run_attempt)
+    outcomes = parse_outcomes(args.outcome)
+    record = _read_record(Path(args.dir) / _run_evidence().VERIFICATION_NAME) or {}
+    identity = {"run_id": run_id, "run_attempt": attempt, "analysis_date": record.get("analysis_date") if record.get("run_id") == run_id and record.get("run_attempt") == attempt else None}
+    status = build_run_status(args.dir, identity, outcomes, moment)
+    warning = _run_evidence().write_json_atomic(args.dir, STATUS_FILE, status)
+    lines = ["### Run status", "", f"Run {run_id}, attempt {attempt}, analysis date {identity['analysis_date'] or 'not established'}: **{status['overall']}**", "", status["summary"], "",
+             "| Stage | Outcome | Note |", "|---|---|---|"] + [f"| {name} | {stage['outcome']} | {stage['note']} |" for name, stage in status["stages"].items()]
+    append_summary(env, lines)
+    print(f"summarize-run: {status['overall']} - {status['summary']}")
+    if warning:
+        print(f"WARNING: run_status.json was not written ({warning})", file=sys.stderr)
+    return 0
+
+
+def _write_verification(out_dir, record):
+    """Persist the consumer's verification record (best effort: the validation outcome never depends on it, and a failure to write it is only a warning)."""
+    if not out_dir:
+        return
+    warning = _run_evidence().write_json_atomic(out_dir, _run_evidence().VERIFICATION_NAME, record)
+    if warning:
+        print(f"WARNING: the consumer verification record was not written ({warning})", file=sys.stderr)
+
+
+def command_validate(args, env, moment):
+    try:
+        outputs = validate_outputs(args.reports_dir, moment, date=getattr(args, "date", None))
+    except AutomationError as error:
+        record = getattr(error, "verification", None) or {"schema_version": 1, "run_id": None, "run_attempt": None, "analysis_date": None, "verified_at": utc_now().strftime("%Y-%m-%d %H:%M:%S UTC"),
+                                                         "checks": [], "overall": "NOT RUN", "reason": str(error)[:500]}
+        _write_verification(getattr(args, "out_dir", None), record)
+        raise
+    _write_verification(getattr(args, "out_dir", None), outputs["verification"])
     print(f"validate: OK analysis date {outputs['date']}, validation PASSED ({outputs['report_path'].name}, {outputs['csv_path'].name})")
     output_file = env.get("GITHUB_OUTPUT")
     if output_file:
@@ -568,8 +830,12 @@ def command_validate(args, env, today):
     return 0
 
 
-def command_build_payload(args, env, today):
-    outputs = validate_outputs(args.reports_dir, today)
+def command_build_payload(args, env, moment):
+    run_id, run_attempt = check_run_id(args.run_id), check_run_attempt(args.run_attempt)
+    outputs = validate_outputs(args.reports_dir, moment, date=args.date)
+    manifest = outputs["manifest"]
+    if manifest["run_id"] != run_id or manifest["run_attempt"] != run_attempt:                 # RUN-001: the payloads must belong to the run that produced the outputs
+        raise AutomationError(f"RUN-001: the manifest belongs to run {manifest['run_id']} attempt {manifest['run_attempt']}, not to run {run_id} attempt {run_attempt}")
     payloads = build_payloads(outputs, args.run_id, args.run_url)
     try:                                                                    # the HTML report is built here (this step holds no secret); if it cannot be, the sheet update must not be blocked
         payloads[REPORT_ACTION] = build_report_payload(outputs, payloads["send_success_email"], utc_now())
@@ -580,12 +846,17 @@ def command_build_payload(args, env, today):
     folder.mkdir(parents=True, exist_ok=True)
     for action, body in payloads.items():
         write_json(folder / f"{action}.json", body)
+    if REPORT_ACTION not in payloads:                                       # an old report payload from an earlier execution must never be mistaken for this run's
+        (folder / f"{REPORT_ACTION}.json").unlink(missing_ok=True)
+    write_json(folder / RUN_CONTEXT_FILE, {"schema_version": 1, "run_id": run_id, "run_attempt": run_attempt, "analysis_date": outputs["date"],
+                                          "payloads": {f"{action}.json": _file_sha256(folder / f"{action}.json") for action in payloads}})
     print(f"build-payload: wrote {len(payloads)} payload files for {outputs['date']} ({len(payloads['upsert_analysis']['rows'])} rows)" + ("" if REPORT_ACTION in payloads else "; NO success report payload"))
     return 0
 
 
-def _record(folder, action, result):
-    write_json(_result_path(folder, action), result)
+def _record(folder, action, result, stamp=None):
+    """Store a reply. When the payload belongs to a run (it has a run context), the reply carries that run's id, attempt and analysis date, so a later reader can refuse a file of another run."""
+    write_json(_result_path(folder, action), result if stamp is None else dict(result, run_context=stamp))
 
 
 def command_post(args, env, today):
@@ -599,6 +870,11 @@ def command_post(args, env, today):
     payload = read_json(path)
     if not isinstance(payload, dict) or payload.get("action") != action or not isinstance(payload.get("rows"), list):
         raise AutomationError(f"{path.name} is not a valid {action} payload")
+    context = load_run_context(folder)
+    if context is not None and (context["payloads"].get(path.name) != _file_sha256(path) or payload.get("analysis_date") != context["analysis_date"]
+                                or (payload.get("run_id") is not None and payload["run_id"] != context["run_id"])):
+        raise AutomationError(f"{path.name} does not match this run's context (it was changed, or it is from another run); nothing was sent")
+    stamp = _stamp_of(context)
     if action in SUCCESS_ACTIONS:
         upsert, verify = load_result(folder, "upsert_analysis"), load_result(folder, "verify_analysis")
         if not (upsert and upsert.get("success") is True and upsert.get("sheet_status") == "ok" and upsert.get("write_confirmed") is True and _is_int(upsert.get("rows_inserted")) and _is_int(upsert.get("rows_updated"))):
@@ -611,15 +887,17 @@ def command_post(args, env, today):
             check_report_request(payload)
     try:
         url, token = read_secrets(env)
+        if action == "upsert_analysis" and context is not None and f"{REPORT_ACTION}.json" in context["payloads"]:       # the run will send the evidence-backed report: check the web app BEFORE the first write
+            preflight_web_app(url, token)
         reply, attempts = post_action(url, payload, token)
     except AutomationError as error:
         result = {"success": False, "error": "NOT_SENT" if error.delivery == "not_sent" else "TRANSPORT", "sheet_status": _sheet_status_after_transport_failure(error), "email_status": "not_attempted", "attempts": error.attempts}
-        _record(folder, action, result)
+        _record(folder, action, result, stamp)
         append_summary(env, summary_lines(action, result, [redact(str(error), secrets)]))
         raise
     result = clean_reply(reply, attempts)
     problems = problems_in(action, result, len(payload["rows"]))
-    _record(folder, action, result)
+    _record(folder, action, result, stamp)
     append_summary(env, summary_lines(action, result, problems))
     if problems:
         print(f"{describe(action, result)} FAILED: " + "; ".join(problems), file=sys.stderr)
@@ -702,7 +980,7 @@ def command_notify_failure(args, env, today):
 def clean_self_check(reply, attempts):
     """The self-check reply keeps only booleans and the six property flags; anything else the web app sends is dropped."""
     kept = {}
-    for name in ("success", *SELF_CHECK_FLAGS):
+    for name in ("success", *SELF_CHECK_FLAGS, CAPABILITY_FLAG):
         if isinstance(reply.get(name), bool):
             kept[name] = reply[name]
     properties = reply.get("properties")
@@ -978,11 +1256,15 @@ def build_parser():
     commands = parser.add_subparsers(dest="command", required=True)
     validate = commands.add_parser("validate", help="check the report and CSV of the last completed UTC day")
     validate.add_argument("--reports-dir", required=True)
+    validate.add_argument("--out-dir", default=None, help="if given, the consumer verification record (consumer_verification.json) is written there")
+    validate.add_argument("--date", default=None, help="the analysis date (YYYY-MM-DD) of the manifest to verify; without it the folder must hold exactly one manifest")
     build = commands.add_parser("build-payload", help="write the request bodies (without the token)")
     build.add_argument("--reports-dir", required=True)
     build.add_argument("--out-dir", required=True)
     build.add_argument("--run-id", required=True)
     build.add_argument("--run-url", required=True)
+    build.add_argument("--run-attempt", required=True, help="the run attempt (GITHUB_RUN_ATTEMPT); it must be the manifest's")
+    build.add_argument("--date", required=True, help="the analysis date (YYYY-MM-DD), passed down from the validate step; it is not recalculated here")
     post = commands.add_parser("post", help="send one request to the web app and check the reply")
     post.add_argument("--action", required=True, choices=POST_ACTIONS)
     post.add_argument("--dir", required=True)
@@ -992,6 +1274,11 @@ def build_parser():
     notify.add_argument("--run-id", required=True)
     notify.add_argument("--run-url", required=True)
     notify.add_argument("--outcome", action="append", default=[], help="step=outcome, repeated for every earlier step")
+    summary = commands.add_parser("summarize-run", help="write run_status.json: one explicit outcome per stage, from this run's evidence")
+    summary.add_argument("--dir", required=True)
+    summary.add_argument("--run-id", required=True)
+    summary.add_argument("--run-attempt", required=True)
+    summary.add_argument("--outcome", action="append", default=[], help="step=outcome, repeated for every step")
     commands.add_parser("self-check", help="read-only check of the web app's configuration (no rows written, no email sent)")
     staging = commands.add_parser("stage-deliverables", help="check the report, CSV and dashboard of one analysis date and stage exactly those three files in a new folder")
     staging.add_argument("--reports-dir", required=True, help="folder with report_<date>.md and report_<date>_data.csv")
@@ -1001,18 +1288,18 @@ def build_parser():
     return parser
 
 
-COMMANDS = {"validate": command_validate, "build-payload": command_build_payload, "post": command_post, "notify-failure": command_notify_failure, "self-check": command_self_check, "stage-deliverables": command_stage_deliverables}
+COMMANDS = {"validate": command_validate, "build-payload": command_build_payload, "post": command_post, "notify-failure": command_notify_failure, "self-check": command_self_check, "stage-deliverables": command_stage_deliverables, "summarize-run": command_summarize_run}
 
 
 def main(argv=None, env=None, now=None):
-    """Returns the exit code: 0 success, 1 a step failed, 2 wrong usage. `env` and `now` (a UTC date or datetime) exist for tests."""
+    """Returns the exit code: 0 success, 1 a step failed, 2 wrong usage. `env` and `now` (a UTC datetime) exist for tests."""
     env = os.environ if env is None else env
     try:
         args = build_parser().parse_args(argv)
     except SystemExit as stop:
         return stop.code if isinstance(stop.code, int) else 2
     try:
-        return COMMANDS[args.command](args, env, utc_today(now))
+        return COMMANDS[args.command](args, env, current_moment(now))
     except AutomationError as error:
         print("ERROR: " + redact(error, secrets_to_hide(env)), file=sys.stderr)
         return 1

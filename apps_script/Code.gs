@@ -59,6 +59,16 @@ const MIN_REPORT_ROWS = 8;
 const MAX_REPORT_ROWS = 400;
 const WINDOW_DAYS = 30;
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+const REPORT_REQUIRED_KEYS = ['meta', 'assets', 'pair', 'coverage', 'charts'];
+const REPORT_OPTIONAL_KEYS = ['comparison', 'validation'];     // sent by newer clients; a report without them (an older client) is still accepted and is shown with the completeness wording only
+const VALIDATION_OUTCOMES = ['PASS', 'FAIL', 'BLOCKED', 'NOT RUN', 'INCONCLUSIVE'];
+const VALIDATION_SEVERITIES = ['ERROR', 'WARNING'];
+const STRONGER_VALUES = ['BTC', 'ETH', 'equal'];
+const RULE_ID_PATTERN = /^[A-Z]{2,4}(-[A-Z0-9]{1,8}){1,3}$/;
+const MAX_VALIDATION_EXCEPTIONS = 5;
+const MAX_EXCEPTION_TEXT = 200;
+const KNOWN_ASSUMPTIONS = { A1: 'A day without trades was accepted as volume 0, no trades and VWAP 0 (a project assumption, not a Kraken guarantee).' };
+const THRESHOLDS = { R1: [0.30, 0.70], R2: [1.25, 0.80], R3: [0.75, 0.50] };    // the descriptive conventions of analysis.py (a test compares them with that file); shown as text only
 const COVERAGE_NAMES = ['date', 'btc_close', 'eth_close', 'btc_return', 'eth_return', 'btc_open', 'btc_high', 'btc_low', 'btc_volume', 'btc_vwap', 'btc_trade_count', 'eth_open', 'eth_high', 'eth_low', 'eth_volume', 'eth_vwap', 'eth_trade_count'];
 
 const MESSAGES = {
@@ -396,8 +406,52 @@ function validateCharts_(charts) {
   });
 }
 
-function validateReport_(report) {
-  requireExactKeys_(report, ['meta', 'assets', 'pair', 'coverage', 'charts']);
+function requireKeysWithOptional_(object, required, optional) {
+  if (!isObject_(object)) throw invalid_();
+  required.forEach(function (key) { if (!Object.prototype.hasOwnProperty.call(object, key)) throw invalid_(); });
+  Object.keys(object).forEach(function (key) { if (required.indexOf(key) < 0 && optional.indexOf(key) < 0) throw invalid_(); });
+}
+
+function hasOwn_(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+// comparison: the stronger performer, the spread and the optional short-window correlations, all calculated by the client. Only the shape and the internal consistency are checked here.
+function validateComparison_(comparison) {
+  requireExactKeys_(comparison, ['stronger', 'spread_pp', 'correlation_7d', 'correlation_14d']);
+  if (STRONGER_VALUES.indexOf(comparison.stronger) < 0 || !isNumberIn_(comparison.spread_pp, -100000, 100000, false)) throw invalid_();
+  if (comparison.stronger === 'ETH' && !(comparison.spread_pp > 0)) throw invalid_();
+  if (comparison.stronger === 'BTC' && !(comparison.spread_pp < 0)) throw invalid_();
+  if (comparison.stronger === 'equal' && Math.abs(comparison.spread_pp) >= 0.005) throw invalid_();
+  ['correlation_7d', 'correlation_14d'].forEach(function (name) { if (!(comparison[name] === null || isNumberIn_(comparison[name], -1, 1, false))) throw invalid_(); });
+}
+
+function validateExceptionText_(value, maxLength) {
+  if (typeof value !== 'string' || value.length < 1 || value.length > maxLength || /[\u0000-\u001f\u007f<>]/.test(value)) throw invalid_();
+}
+
+// validation: the evidence-backed result of the client's checks. PASS is accepted only when the counts prove complete coverage; nothing is recomputed here.
+function validateValidation_(validation, runId) {
+  requireExactKeys_(validation, ['run_id', 'overall', 'fields_total', 'fields_validated', 'instances_expected', 'instances_evaluated', 'instances_passed', 'checks_total', 'checks_passed', 'assumptions', 'exceptions']);
+  if (validation.run_id !== runId || VALIDATION_OUTCOMES.indexOf(validation.overall) < 0) throw invalid_();
+  if (validation.fields_total !== COVERAGE_NAMES.length || !isIntegerIn_(validation.fields_validated, 0, validation.fields_total)) throw invalid_();
+  if (!isIntegerIn_(validation.instances_expected, 0, 100000) || !isIntegerIn_(validation.instances_evaluated, 0, validation.instances_expected) || !isIntegerIn_(validation.instances_passed, 0, validation.instances_evaluated)) throw invalid_();
+  if (!isIntegerIn_(validation.checks_total, 0, 100) || !isIntegerIn_(validation.checks_passed, 0, validation.checks_total)) throw invalid_();
+  if (!Array.isArray(validation.assumptions) || validation.assumptions.length > 4) throw invalid_();
+  validation.assumptions.forEach(function (id) { if (typeof id !== 'string' || !hasOwn_(KNOWN_ASSUMPTIONS, id)) throw invalid_(); });
+  if (!Array.isArray(validation.exceptions) || validation.exceptions.length > MAX_VALIDATION_EXCEPTIONS) throw invalid_();
+  validation.exceptions.forEach(function (entry) {
+    requireExactKeys_(entry, ['rule_id', 'severity', 'outcome', 'field', 'explanation']);
+    if (typeof entry.rule_id !== 'string' || !RULE_ID_PATTERN.test(entry.rule_id) || VALIDATION_SEVERITIES.indexOf(entry.severity) < 0 || VALIDATION_OUTCOMES.indexOf(entry.outcome) < 0 || entry.outcome === 'PASS') throw invalid_();
+    validateExceptionText_(entry.field, 40);
+    validateExceptionText_(entry.explanation, MAX_EXCEPTION_TEXT);
+  });
+  if (validation.overall === 'PASS' && !(validation.fields_validated === validation.fields_total && validation.instances_expected > 0 && validation.instances_evaluated === validation.instances_expected &&
+      validation.instances_passed === validation.instances_expected && validation.checks_total > 0 && validation.checks_passed === validation.checks_total && validation.exceptions.length === 0)) throw invalid_();    // PASS without complete evidence is refused
+}
+
+function validateReport_(report, runId) {
+  requireKeysWithOptional_(report, REPORT_REQUIRED_KEYS, REPORT_OPTIONAL_KEYS);
   requireExactKeys_(report.meta, ['rows', 'first_date', 'data_fetched', 'generated_at']);
   if (!isIntegerIn_(report.meta.rows, MIN_REPORT_ROWS, MAX_REPORT_ROWS)) throw invalid_();
   validateDate_(report.meta.first_date);
@@ -412,6 +466,8 @@ function validateReport_(report) {
   if (!(report.pair.overlap_share === null || isNumberIn_(report.pair.overlap_share, 0, 1, false))) throw invalid_();
   validateCoverage_(report.coverage, report.meta.rows);
   validateCharts_(report.charts);
+  if (hasOwn_(report, 'comparison')) validateComparison_(report.comparison);
+  if (hasOwn_(report, 'validation')) validateValidation_(report.validation, runId);
   return report;
 }
 
@@ -594,7 +650,7 @@ function handleSuccessReport_(request, secret) {
   const update = validateSheetUpdate_(request.sheet_update);
   const summary = validateSummary_(request.summary);
   const artifactUrl = validateArtifactUrl_(request.artifact_url, runId);
-  const report = validateReport_(request.report);
+  const report = validateReport_(request.report, runId);
   const config = readSheetConfig_();
   return withLock_(function () {
     verifiedRows_(config, rows);                                   // no success e-mail unless the sheet really holds the rows
@@ -679,7 +735,7 @@ function handleSelfCheck_(request) {
   const emailValid = EMAIL_PATTERN.test(readProperty_('EMAIL_TO'));
   const sheetNameMatches = hasExpectedName ? properties.SHEET_NAME && readProperty_('SHEET_NAME') === request.expected_sheet_name : true;
   const ok = CONFIG_PROPERTIES.every(function (name) { return properties[name]; }) && spreadsheetFound && sheetFound && headersOk && emailValid && sheetNameMatches;
-  const result = { success: ok, properties: properties, spreadsheet_found: spreadsheetFound, sheet_found: sheetFound, headers_ok: headersOk, email_valid: emailValid };
+  const result = { success: ok, properties: properties, spreadsheet_found: spreadsheetFound, sheet_found: sheetFound, headers_ok: headersOk, email_valid: emailValid, report_evidence_supported: true };   // tells the client (before it writes anything) that this script accepts the comparison and validation parts of the report
   if (hasExpectedName) result.sheet_name_matches = Boolean(sheetNameMatches);
   if (!ok) { result.error = 'NOT_CONFIGURED'; result.message = MESSAGES.NOT_CONFIGURED; }
   return result;
@@ -732,7 +788,6 @@ function successBody_(date, validation, update, summary, runId, url, secret) {
     'Daily Market Analysis finished successfully.',
     '',
     'Analysis date (last completed UTC day): ' + date,
-    'Data validation: ' + validation,
     'Spreadsheet: updated and verified by reading the rows back (' + update.rows_inserted + ' inserted, ' + update.rows_updated + ' updated)',
     '',
     assetLine_('BTC', summary.btc),
@@ -775,9 +830,9 @@ const LINE = '#e5e7eb';
 const BTC_COLOUR = '#f7931a';
 const ETH_COLOUR = '#627eea';
 const CHART_TEXT = {
-  indexed: { title: 'Price, indexed to 100 at the start of the 30-day window', kind: 'Line chart' },
-  returns: { title: 'Daily returns, percent', kind: 'Bar chart' },
-  drawdown: { title: 'Drawdown from the highest close so far, percent', kind: 'Line chart' },
+  indexed: { title: 'Price, indexed to 100 at the start of the 30-day window', kind: 'Line chart', guide: 'Both assets start at 100, so a line above 100 has risen since the start of the window, and the higher line gained more.' },
+  returns: { title: 'Daily returns, percent', kind: 'Bar chart', guide: 'Each pair of bars is one day. Bars below zero are down days; a day on which both bars fall is a day both assets declined.' },
+  drawdown: { title: 'Drawdown from the highest close so far, percent', kind: 'Line chart', guide: '0% means the asset closed at its highest close so far in the window; a lower line means it closed further below its own high.' },
 };
 
 function escapeHtml_(text) {
@@ -863,22 +918,48 @@ function coverageStatus_(entry, rows) {
   return { expected: expected, ok: entry.valid_rows === expected };
 }
 
-function coverageSection_(report) {
+// Completeness only: every expected cell of a field holds a well-formed number or date. It says nothing about whether the values are plausible.
+function completeness_(report) {
   const rows = report.meta.rows;
-  const statuses = report.coverage.map(function (entry) { return coverageStatus_(entry, rows); });
-  const complete = statuses.filter(function (status) { return status.ok; }).length;
-  const head = '<tr>' + ['Variable', 'Valid rows', 'Latest value', 'Status'].map(function (title, i) {
-    return '<th scope="col" align="' + (i === 0 || i === 3 ? 'left' : 'right') + '" style="padding:4px 6px;font-family:' + FONT + ';font-size:12px;line-height:16px;color:' + MUTED + ';border-bottom:1px solid ' + LINE + ';">' + title + '</th>';
-  }).join('') + '</tr>';
-  const body = report.coverage.map(function (entry, i) {
-    const status = statuses[i];
-    const cell = function (align, content, extra) { return '<td align="' + align + '" style="padding:3px 6px;font-family:' + FONT + ';font-size:12px;line-height:16px;color:' + INK + ';border-bottom:1px solid ' + LINE + ';' + (extra || '') + '">' + content + '</td>'; };
-    return '<tr>' + cell('left', escapeHtml_(entry.name)) + cell('right', entry.valid_rows + ' of ' + status.expected) + cell('right', escapeHtml_(entry.latest)) +
-      cell('left', status.ok ? 'OK' : 'MISSING', status.ok ? '' : 'font-weight:bold;color:#b91c1c;') + '</tr>';
-  }).join('');
-  return section_('Data quality: ' + complete + ' of ' + COVERAGE_NAMES.length + ' variables complete',
-    text_('font-size:13px;line-height:19px;color:' + MUTED + ';padding-bottom:8px;', escapeHtml_(rows + ' daily rows from ' + report.meta.first_date + '. The two return variables have one row fewer, because the first day has no previous close.')) +
-    table_('100%', '', head + body));
+  const items = report.coverage.map(function (entry) { const status = coverageStatus_(entry, rows); return { name: entry.name, valid: entry.valid_rows, expected: status.expected, ok: status.ok }; });
+  return { total: items.length, populated: items.filter(function (item) { return item.ok; }).length, incomplete: items.filter(function (item) { return !item.ok; }) };
+}
+
+function validationHeadline_(validation) {
+  if (validation.overall === 'PASS') return 'Data validation: PASS (' + validation.fields_validated + ' of ' + validation.fields_total + ' fields validated)';
+  return 'Data validation: ' + validation.overall + ' (' + validation.exceptions.length + ' exception' + (validation.exceptions.length === 1 ? '' : 's') + ' listed under Data confidence)';
+}
+
+// The one line about data confidence: the evidence-backed validation result when the client sent it, otherwise the completeness statement and nothing more. Never a PASS without evidence.
+function confidenceLine_(report) {
+  if (hasOwn_(report, 'validation')) return validationHeadline_(report.validation);
+  const c = completeness_(report);
+  return 'Data completeness: ' + c.populated + ' of ' + c.total + ' fields populated';
+}
+
+function confidenceSection_(report) {
+  const c = completeness_(report);
+  const parts = [text_('font-size:13px;line-height:19px;font-weight:bold;color:' + INK + ';padding-bottom:4px;', escapeHtml_('Data completeness: ' + c.populated + ' of ' + c.total + ' fields populated')),
+    text_('font-size:12px;line-height:18px;color:' + MUTED + ';padding-bottom:8px;', escapeHtml_('Each field holds a well-formed number or date on every expected row (' + report.meta.rows + ' daily rows from ' + report.meta.first_date +
+      '; the two return fields have one row fewer, because the first day has no previous close). This is a completeness check only; it does not test whether the values are plausible.'))];
+  if (c.incomplete.length > 0) {
+    parts.push(text_('font-size:13px;line-height:19px;font-weight:bold;color:#b91c1c;padding-bottom:4px;', escapeHtml_('Incomplete: ' + c.incomplete.map(function (item) { return item.name + ' (' + item.valid + ' of ' + item.expected + ' rows)'; }).join(', '))));
+  }
+  if (hasOwn_(report, 'validation')) {
+    const v = report.validation;
+    const bad = v.overall !== 'PASS';
+    const rows = [metricRow_('Validation result', v.overall, bad ? '#b91c1c' : '#15803d'), metricRow_('Fields validated', v.fields_validated + ' of ' + v.fields_total),
+      metricRow_('Candle checks passed', v.instances_passed + ' of ' + v.instances_expected, null, v.instances_evaluated + ' evaluated'), metricRow_('Verification checks passed', v.checks_passed + ' of ' + v.checks_total)];
+    parts.push(table_('100%', 'padding-bottom:6px;', rows.join('')));
+    v.assumptions.forEach(function (id) { parts.push(text_('font-size:12px;line-height:18px;color:' + MUTED + ';padding-bottom:4px;', escapeHtml_('Assumption ' + id + ': ' + KNOWN_ASSUMPTIONS[id]))); });
+    v.exceptions.forEach(function (entry) {
+      parts.push(text_('font-size:12px;line-height:18px;color:#b91c1c;padding-bottom:4px;', escapeHtml_(entry.rule_id + ' (' + entry.severity + ', ' + entry.outcome + ', ' + entry.field + '): ' + entry.explanation)));
+    });
+    if (bad && v.exceptions.length === 0) parts.push(text_('font-size:12px;line-height:18px;color:#b91c1c;padding-bottom:4px;', 'The validation is not a PASS; the details are in the run\'s manifest and diagnostics.'));
+  } else {
+    parts.push(text_('font-size:12px;line-height:18px;color:' + MUTED + ';padding-bottom:4px;', 'A validation result for the values themselves is not part of this message.'));
+  }
+  return section_('Data confidence', parts.join(''));
 }
 
 function chartSection_(chart) {
@@ -886,7 +967,8 @@ function chartSection_(chart) {
   const legend = table_('', '', '<tr><td width="12" height="12" bgcolor="' + BTC_COLOUR + '" style="width:12px;height:12px;line-height:12px;font-size:1px;background-color:' + BTC_COLOUR + ';">&nbsp;</td><td style="padding:0 14px 0 6px;font-family:' + FONT + ';font-size:12px;color:' + MUTED + ';">BTC latest ' + escapeHtml_(chartValue_(chart.id, chart.btc_last)) + '</td>' +
     '<td width="12" height="12" bgcolor="' + ETH_COLOUR + '" style="width:12px;height:12px;line-height:12px;font-size:1px;background-color:' + ETH_COLOUR + ';">&nbsp;</td><td style="padding:0 0 0 6px;font-family:' + FONT + ';font-size:12px;color:' + MUTED + ';">ETH latest ' + escapeHtml_(chartValue_(chart.id, chart.eth_last)) + '</td></tr>');
   const alt = info.kind + ': ' + info.title.toLowerCase() + ', BTC and ETH, last 30 days. The latest value is ' + chartValue_(chart.id, chart.btc_last) + ' for BTC and ' + chartValue_(chart.id, chart.eth_last) + ' for ETH.';
-  return '<tr><td class="pad" style="padding:16px 24px 0 24px;border-top:1px solid ' + LINE + ';">' + text_('font-size:14px;line-height:20px;font-weight:bold;color:' + INK + ';padding-bottom:6px;', escapeHtml_(info.title)) + legend + '</td></tr>' +
+  return '<tr><td class="pad" style="padding:16px 24px 0 24px;border-top:1px solid ' + LINE + ';">' + text_('font-size:14px;line-height:20px;font-weight:bold;color:' + INK + ';padding-bottom:4px;', escapeHtml_(info.title)) +
+    text_('font-size:12px;line-height:17px;color:' + MUTED + ';padding-bottom:6px;', escapeHtml_(info.guide)) + legend + '</td></tr>' +
     '<tr><td style="padding:8px 0 0 0;"><img src="cid:chart_' + chart.id + '" alt="' + escapeHtml_(alt) + '" width="600" height="240" style="display:block;width:100%;max-width:600px;height:auto;border:0;outline:none;text-decoration:none;"></td></tr>' +
     '<tr><td class="pad" style="padding:4px 24px 12px 24px;">' + text_('font-size:11px;line-height:16px;color:' + MUTED + ';', 'Vertical scale ' + escapeHtml_(scaleEnd_(chart.id, chart.low)) + ' to ' + escapeHtml_(scaleEnd_(chart.id, chart.high)) + '. Orange is BTC, blue is ETH.') + '</td></tr>';
 }
@@ -895,14 +977,32 @@ function linkButton_(href, label) {
   return '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr><td bgcolor="#1d4ed8" style="background-color:#1d4ed8;padding:10px 18px;"><a href="' + escapeHtml_(href) + '" style="font-family:' + FONT + ';font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none;">' + escapeHtml_(label) + '</a></td></tr></table>';
 }
 
+function chartById_(report, id) {
+  return report.charts.filter(function (chart) { return chart.id === id; })[0];
+}
+
+function performanceSentence_(comparison) {
+  if (comparison.stronger === 'equal') return 'Over the 30-day window Bitcoin and Ethereum returned the same, to two decimals.';
+  return (comparison.stronger === 'ETH' ? 'Ethereum' : 'Bitcoin') + ' was the stronger performer over the 30-day window, ahead by ' + Math.abs(comparison.spread_pp).toFixed(2) + ' percentage points.';
+}
+
+function thresholdsText_() {
+  return 'R1 to R3 are descriptive classifications fixed in advance for this 30-day sample; they are not trading signals and not advice. R1 compares the size of the correlation with ' + THRESHOLDS.R1[0].toFixed(2) + ' and ' + THRESHOLDS.R1[1].toFixed(2) +
+    '. R2 compares the ETH / BTC volatility ratio with ' + THRESHOLDS.R2[0].toFixed(2) + ' and ' + THRESHOLDS.R2[1].toFixed(2) + '. R3 compares the share of the down days of the asset with fewer of them that were also down days for the other with ' +
+    THRESHOLDS.R3[0].toFixed(2) + ' and ' + THRESHOLDS.R3[1].toFixed(2) + '.';
+}
+
 function reportHtml_(d, secret) {
   const s = d.summary;
   const report = d.report;
   const meta = report.meta;
   const pair = report.pair;
+  const comparison = hasOwn_(report, 'comparison') ? report.comparison : null;
   const ratio = pair.volatility_ratio === null ? 'not computable (BTC volatility is zero)' : pair.volatility_ratio.toFixed(3);
   const share = pair.overlap_share === null ? 'not assessable (an asset had no down days)' : pair.overlap_share.toFixed(2);
-  const passed = d.validation === 'PASSED';
+  const bad = hasOwn_(report, 'validation') && report.validation.overall !== 'PASS';
+  const brief = [text_('font-size:13px;line-height:20px;color:' + INK + ';padding-bottom:6px;', 'Over the 30-day window, Bitcoin returned <strong>' + escapeHtml_(signedPercent_(report.assets.btc.return_30d)) + '</strong> and Ethereum <strong>' + escapeHtml_(signedPercent_(report.assets.eth.return_30d)) + '</strong>.')];
+  if (comparison) brief.push(text_('font-size:13px;line-height:20px;color:' + INK + ';padding-bottom:6px;', escapeHtml_(performanceSentence_(comparison))));
   const observations = s.observations.map(function (text) { return '<li style="margin:0 0 6px 0;">' + escapeHtml_(oneLine_(redact_(text, secret))) + '</li>'; }).join('');
   const parts = [];
   parts.push('<!DOCTYPE html>', '<html lang="en">', '<head>', '<meta charset="utf-8">', '<meta name="viewport" content="width=device-width, initial-scale=1">',
@@ -912,19 +1012,27 @@ function reportHtml_(d, secret) {
     '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f3f4f6" style="border-collapse:collapse;background-color:#f3f4f6;"><tr><td align="center" style="padding:16px 8px;">',
     '<table role="presentation" class="container" width="600" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" style="border-collapse:collapse;width:600px;background-color:#ffffff;border:1px solid ' + LINE + ';">');
   parts.push('<tr><td class="pad" bgcolor="#0f172a" style="background-color:#0f172a;padding:22px 24px;"><h1 style="margin:0;font-family:' + FONT + ';font-size:22px;line-height:28px;color:#ffffff;">Daily Market Analysis</h1>' +
-    text_('font-size:14px;line-height:20px;color:#cbd5e1;padding-top:6px;', 'Bitcoin vs Ethereum, Kraken daily data, 30-day window. Analysis date (last completed UTC day): <strong style="color:#ffffff;">' + escapeHtml_(d.date) + '</strong>') +
-    text_('font-size:13px;line-height:20px;color:#cbd5e1;padding-top:8px;', 'Data validation: <span style="background-color:' + (passed ? '#dcfce7' : '#fee2e2') + ';color:' + (passed ? '#166534' : '#991b1b') + ';font-weight:bold;padding:2px 8px;">' + escapeHtml_(d.validation) + '</span>&nbsp; Report status: <strong style="color:#ffffff;">' + escapeHtml_(d.reportStatus) + '</strong>') + '</td></tr>');
+    text_('font-size:14px;line-height:20px;color:#cbd5e1;padding-top:6px;', 'Bitcoin vs Ethereum, Kraken daily data. Analysis date (last completed UTC day): <strong style="color:#ffffff;">' + escapeHtml_(d.date) + '</strong>') +
+    text_('font-size:13px;line-height:20px;color:#cbd5e1;padding-top:4px;', 'Reporting period: the last ' + WINDOW_DAYS + ' daily returns, ending ' + escapeHtml_(d.date) + '.') +
+    text_('font-size:13px;line-height:20px;color:' + (bad ? '#fecaca' : '#cbd5e1') + ';padding-top:8px;font-weight:bold;', escapeHtml_(confidenceLine_(report))) + '</td></tr>');
+  parts.push(section_('Market brief', brief.join('') + (observations ? '<ul style="margin:0 0 12px 18px;padding:0;font-family:' + FONT + ';font-size:13px;line-height:19px;color:' + INK + ';">' + observations + '</ul>' : '') +
+    text_('font-size:11px;line-height:16px;color:' + MUTED + ';padding-bottom:12px;', 'Descriptive labels for this 30-day sample only, not advice.')));
   parts.push(section_('Latest figures', '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr><td class="stack" width="50%" valign="top" style="padding:0 6px 12px 0;">' + assetCard_('BTC', 'Bitcoin', BTC_COLOUR, s.btc, report.assets.btc) +
     '</td><td class="stack" width="50%" valign="top" style="padding:0 0 12px 6px;">' + assetCard_('ETH', 'Ethereum', ETH_COLOUR, s.eth, report.assets.eth) + '</td></tr></table>' +
     text_('font-size:11px;line-height:16px;color:' + MUTED + ';padding-bottom:12px;', 'Returns are changes of the daily close; volatility is the sample standard deviation of the 30 daily returns; drawdown is the largest fall from a previous high within the window.')));
-  parts.push(section_('How the two assets moved together', table_('100%', 'padding-bottom:12px;',
-    metricRow_('Correlation of daily returns (30 days)', s.correlation.toFixed(6)) + metricRow_('Co-movement (rule R1)', oneLine_(s.rules.R1)) +
-    metricRow_('ETH / BTC volatility ratio', ratio) + metricRow_('Relative volatility (rule R2)', oneLine_(s.rules.R2)) +
-    metricRow_('Days both assets fell', pair.joint_negative_days + ' of ' + WINDOW_DAYS) + metricRow_('Down-day overlap share', share) + metricRow_('Down-day overlap (rule R3)', oneLine_(s.rules.R3)))));
-  if (observations) parts.push(section_('Observations', '<ul style="margin:0 0 12px 18px;padding:0;font-family:' + FONT + ';font-size:13px;line-height:19px;color:' + INK + ';">' + observations + '</ul>' +
-    text_('font-size:11px;line-height:16px;color:' + MUTED + ';padding-bottom:12px;', 'Descriptive labels for this 30-day sample only, not advice.')));
-  report.charts.forEach(function (chart) { parts.push(chartSection_(chart)); });
-  parts.push(coverageSection_(report));
+  parts.push(chartSection_(chartById_(report, 'indexed')));
+  parts.push(section_('Risk and volatility', text_('font-size:13px;line-height:19px;color:' + MUTED + ';padding-bottom:8px;', 'Annualised volatility, maximum drawdown, worst day and down days are in the figures above. The charts show how far each asset closed below its own high and how large the daily moves were. Past volatility does not predict future volatility.')));
+  parts.push(chartSection_(chartById_(report, 'drawdown')));
+  parts.push(chartSection_(chartById_(report, 'returns')));
+  const relation = [metricRow_('Correlation of daily returns (30 days)', s.correlation.toFixed(6)), metricRow_('Co-movement (rule R1)', oneLine_(s.rules.R1)),
+    metricRow_('ETH / BTC volatility ratio', ratio), metricRow_('Relative volatility (rule R2)', oneLine_(s.rules.R2)),
+    metricRow_('Days both assets fell', pair.joint_negative_days + ' of ' + WINDOW_DAYS), metricRow_('Down-day overlap share', share), metricRow_('Down-day overlap (rule R3)', oneLine_(s.rules.R3))];
+  if (comparison && comparison.correlation_7d !== null) relation.push(metricRow_('Analyst context: correlation, 7 days', comparison.correlation_7d.toFixed(2), null, 'only 7 observations; sensitive to single days'));
+  if (comparison && comparison.correlation_14d !== null) relation.push(metricRow_('Analyst context: correlation, 14 days', comparison.correlation_14d.toFixed(2), null, 'only 14 observations; sensitive to single days'));
+  parts.push(section_('How the assets moved together', table_('100%', 'padding-bottom:12px;', relation.join('')) +
+    text_('font-size:11px;line-height:16px;color:' + MUTED + ';padding-bottom:6px;', 'The 30-day correlation is the primary measure. A correlation describes this sample only; it does not guarantee diversification and does not predict future co-movement.') +
+    text_('font-size:11px;line-height:16px;color:' + MUTED + ';padding-bottom:12px;', escapeHtml_(thresholdsText_()))));
+  parts.push(confidenceSection_(report));
   parts.push(section_('Google Sheets and deliverables', table_('100%', 'padding-bottom:6px;', metricRow_('Google Sheets', 'updated and verified by reading the rows back (' + d.update.rows_inserted + ' inserted, ' + d.update.rows_updated + ' updated)') +
     metricRow_('Data fetched', meta.data_fetched) + metricRow_('Report generated', meta.generated_at)) +
     text_('font-size:13px;line-height:19px;color:' + INK + ';padding:10px 0 10px 0;', 'The full interactive HTML dashboard, the Markdown report and the CSV data are in one downloadable file. Open the page, sign in to GitHub, download the archive and open the HTML file in a browser. The files are kept for 14 days.') +
