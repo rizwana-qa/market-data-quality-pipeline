@@ -46,6 +46,8 @@ const READ_BACK_TOLERANCE = 1e-12;
 
 // success report (send_success_report): the HTML e-mail with three small PNG charts that the web app builds itself from validated fields
 const ARTIFACT_URL_PATTERN = /^https:\/\/github\.com\/rizwana-qa\/market-data-quality-pipeline\/actions\/runs\/(\d{1,20})\/artifacts\/\d{1,20}$/;
+// The permanent GitHub Pages report of one analysis date: this repository's Pages site, the dated folder, one fixed file name, nothing after it.
+const REPORT_URL_PATTERN = /^https:\/\/rizwana-qa\.github\.io\/market-data-quality-pipeline\/reports\/(\d{4}-\d{2}-\d{2})\/market_intelligence_report\.html$/;
 const UTC_TIME_PATTERN = /^(\d{4}-\d{2}-\d{2}) ([01]\d|2[0-3]):[0-5]\d:[0-5]\d UTC$/;
 const BASE64_PATTERN = /^[A-Za-z0-9+\/]+={0,2}$/;
 const LATEST_PATTERN = /^[\x20-\x7e]{1,30}$/;
@@ -318,6 +320,34 @@ function validateArtifactUrl_(value, runId) {
   const match = typeof value === 'string' ? ARTIFACT_URL_PATTERN.exec(value) : null;
   if (!match || match[1] !== runId) throw invalid_();       // this repository, this run, https, nothing after the artifact id
   return value;
+}
+
+// The optional report link of a success report. It never fails the request: whatever is wrong with it, the e-mail is still sent and carries the artifact link, which validateArtifactUrl_ has
+// already checked on its own (this repository, this run, https). A rejected value is never echoed, neither into the e-mail nor into the log (only a reason code is logged).
+//   none         neither field was sent (an older client): the e-mail is exactly the one sent before this feature existed
+//   verified     report_url matched the strict pattern and its date is the analysis date of this e-mail
+//   unavailable  the client says (report_link_status) that it could not confirm the page online, or the field sent was invalid, mismatched or conflicting (the reason is logged)
+function optionalLinkKeys_(request) {                 // the two optional keys that are present; any other extra key still makes the exact-key check fail
+  return ['report_url', 'report_link_status'].filter(function (key) { return Object.prototype.hasOwnProperty.call(request, key); });
+}
+
+function unavailableReportLink_(reason) {
+  if (reason) console.error('report link rejected (' + reason + '); the e-mail carries the validated artifact link instead');
+  return { outcome: 'unavailable', url: null };
+}
+
+function resolveReportLink_(request, analysisDate) {
+  const hasUrl = Object.prototype.hasOwnProperty.call(request, 'report_url');
+  const hasStatus = Object.prototype.hasOwnProperty.call(request, 'report_link_status');
+  if (!hasUrl && !hasStatus) return { outcome: 'none', url: null };
+  if (hasUrl && hasStatus) return unavailableReportLink_('both_fields');
+  if (hasStatus) return request.report_link_status === 'unavailable' ? unavailableReportLink_('') : unavailableReportLink_('unknown_status');
+  const value = request.report_url;
+  if (typeof value !== 'string') return unavailableReportLink_('not_text');
+  const match = REPORT_URL_PATTERN.exec(value);
+  if (!match || !isCalendarDate_(match[1])) return unavailableReportLink_('pattern');
+  if (match[1] !== analysisDate) return unavailableReportLink_('date_mismatch');
+  return { outcome: 'verified', url: value };
 }
 
 function validateAssetFigures_(figures) {
@@ -641,7 +671,7 @@ function handleSuccessEmail_(request, secret) {
 // success e-mail goes out instead and the reply says email_format "text_fallback"; if that fails too, the reply is EMAIL_FAILED and nothing is remembered. If the HTML send itself raises an error, the
 // outcome is unknown: nothing more is sent and the reply is SEND_OUTCOME_UNKNOWN (see sendReportMail_).
 function handleSuccessReport_(request, secret) {
-  requireExactKeys_(request, ['action', 'token', 'analysis_date', 'rows', 'run_id', 'workflow_url', 'validation_status', 'sheet_update', 'summary', 'artifact_url', 'report']);
+  requireExactKeys_(request, ['action', 'token', 'analysis_date', 'rows', 'run_id', 'workflow_url', 'validation_status', 'sheet_update', 'summary', 'artifact_url', 'report'].concat(optionalLinkKeys_(request)));
   const date = validateAnalysisDate_(request.analysis_date);
   const rows = validateRows_(request.rows, date);
   const runId = validateRunId_(request.run_id);
@@ -650,6 +680,7 @@ function handleSuccessReport_(request, secret) {
   const update = validateSheetUpdate_(request.sheet_update);
   const summary = validateSummary_(request.summary);
   const artifactUrl = validateArtifactUrl_(request.artifact_url, runId);
+  const reportLink = resolveReportLink_(request, date);
   const report = validateReport_(request.report, runId);
   const config = readSheetConfig_();
   return withLock_(function () {
@@ -659,8 +690,8 @@ function handleSuccessReport_(request, secret) {
     const dedupeKey = 'ok:' + runId + ':' + date;
     if (cache.get(dedupeKey)) return { sheet_status: 'ok', email_status: 'skipped_duplicate' };
     const subject = 'Daily Market Analysis OK - ' + date;
-    const text = successBody_(date, validation, update, summary, runId, url, secret) + '\n\nDeliverables (HTML dashboard, report and CSV; GitHub sign-in required): ' + artifactUrl;
-    const format = sendReportMail_(recipient, subject, text, { date: date, validation: validation, reportStatus: rows[0].values[8], update: update, summary: summary, runId: runId, url: url, artifactUrl: artifactUrl, report: report }, secret);
+    const text = successBody_(date, validation, update, summary, runId, url, secret) + '\n\nDeliverables (HTML dashboard, report and CSV; GitHub sign-in required): ' + artifactUrl + reportLinkText_(reportLink);
+    const format = sendReportMail_(recipient, subject, text, { date: date, validation: validation, reportStatus: rows[0].values[8], update: update, summary: summary, runId: runId, url: url, artifactUrl: artifactUrl, reportLink: reportLink, report: report }, secret);
     return recordSent_(cache, dedupeKey, { sheet_status: 'ok', email_status: 'sent', email_format: format });
   });
 }
@@ -735,7 +766,7 @@ function handleSelfCheck_(request) {
   const emailValid = EMAIL_PATTERN.test(readProperty_('EMAIL_TO'));
   const sheetNameMatches = hasExpectedName ? properties.SHEET_NAME && readProperty_('SHEET_NAME') === request.expected_sheet_name : true;
   const ok = CONFIG_PROPERTIES.every(function (name) { return properties[name]; }) && spreadsheetFound && sheetFound && headersOk && emailValid && sheetNameMatches;
-  const result = { success: ok, properties: properties, spreadsheet_found: spreadsheetFound, sheet_found: sheetFound, headers_ok: headersOk, email_valid: emailValid, report_evidence_supported: true };   // tells the client (before it writes anything) that this script accepts the comparison and validation parts of the report
+  const result = { success: ok, properties: properties, spreadsheet_found: spreadsheetFound, sheet_found: sheetFound, headers_ok: headersOk, email_valid: emailValid, report_evidence_supported: true, report_link_supported: true };   // tells the client (before it writes anything) that this script accepts the comparison and validation parts of the report, and the optional report_url / report_link_status
   if (hasExpectedName) result.sheet_name_matches = Boolean(sheetNameMatches);
   if (!ok) { result.error = 'NOT_CONFIGURED'; result.message = MESSAGES.NOT_CONFIGURED; }
   return result;
@@ -1015,6 +1046,8 @@ function reportHtml_(d, secret) {
     text_('font-size:14px;line-height:20px;color:#cbd5e1;padding-top:6px;', 'Bitcoin vs Ethereum, Kraken daily data. Analysis date (last completed UTC day): <strong style="color:#ffffff;">' + escapeHtml_(d.date) + '</strong>') +
     text_('font-size:13px;line-height:20px;color:#cbd5e1;padding-top:4px;', 'Reporting period: the last ' + WINDOW_DAYS + ' daily returns, ending ' + escapeHtml_(d.date) + '.') +
     text_('font-size:13px;line-height:20px;color:' + (bad ? '#fecaca' : '#cbd5e1') + ';padding-top:8px;font-weight:bold;', escapeHtml_(confidenceLine_(report))) + '</td></tr>');
+  const linkSection = reportLinkSection_(d.reportLink);
+  if (linkSection) parts.push(linkSection);                         // nothing is added for an older client, so its e-mail stays byte for byte what it was
   parts.push(section_('Market brief', brief.join('') + (observations ? '<ul style="margin:0 0 12px 18px;padding:0;font-family:' + FONT + ';font-size:13px;line-height:19px;color:' + INK + ';">' + observations + '</ul>' : '') +
     text_('font-size:11px;line-height:16px;color:' + MUTED + ';padding-bottom:12px;', 'Descriptive labels for this 30-day sample only, not advice.')));
   parts.push(section_('Latest figures', '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr><td class="stack" width="50%" valign="top" style="padding:0 6px 12px 0;">' + assetCard_('BTC', 'Bitcoin', BTC_COLOUR, s.btc, report.assets.btc) +
@@ -1035,12 +1068,35 @@ function reportHtml_(d, secret) {
   parts.push(confidenceSection_(report));
   parts.push(section_('Google Sheets and deliverables', table_('100%', 'padding-bottom:6px;', metricRow_('Google Sheets', 'updated and verified by reading the rows back (' + d.update.rows_inserted + ' inserted, ' + d.update.rows_updated + ' updated)') +
     metricRow_('Data fetched', meta.data_fetched) + metricRow_('Report generated', meta.generated_at)) +
-    text_('font-size:13px;line-height:19px;color:' + INK + ';padding:10px 0 10px 0;', 'The full interactive HTML dashboard, the Markdown report and the CSV data are in one downloadable file. Open the page, sign in to GitHub, download the archive and open the HTML file in a browser. The files are kept for 14 days.') +
-    linkButton_(d.artifactUrl, 'Download the dashboard, report and CSV') + '<p style="margin:12px 0 0 0;font-family:' + FONT + ';font-size:13px;line-height:19px;color:' + INK + ';">Workflow run ' + escapeHtml_(d.runId) + ': <a href="' + escapeHtml_(d.url) + '" style="color:#1d4ed8;">' + escapeHtml_(d.url) + '</a></p>'));
+    text_('font-size:13px;line-height:19px;color:' + INK + ';padding:10px 0 10px 0;', deliverablesText_(d.reportLink)) +
+    linkButton_(d.artifactUrl, d.reportLink.outcome === 'none' ? 'Download the dashboard, report and CSV' : 'Download the report, dashboard and CSV') +'<p style="margin:12px 0 0 0;font-family:' + FONT + ';font-size:13px;line-height:19px;color:' + INK + ';">Workflow run ' + escapeHtml_(d.runId) + ': <a href="' + escapeHtml_(d.url) + '" style="color:#1d4ed8;">' + escapeHtml_(d.url) + '</a></p>'));
   parts.push('<tr><td class="pad" style="padding:16px 24px 20px 24px;border-top:1px solid ' + LINE + ';">' + text_('font-size:12px;line-height:18px;color:' + MUTED + ';', 'Executed: ' + escapeHtml_(timesText_())) +
     text_('font-size:12px;line-height:18px;color:' + MUTED + ';padding-top:4px;', 'Educational use only. Not financial advice.') + '</td></tr>');
   parts.push('</table>', '</td></tr></table>', '</body>', '</html>');
   return parts.join('\n');
+}
+
+// The interactive report link of the success e-mail. 'none' (an older client) keeps the e-mail exactly as it was. 'verified': the primary button to the exact dated Pages report.
+// 'unavailable': no Pages button at all; the notice points to the artifact, which holds the report and has its own button in the deliverables section below.
+function reportLinkSection_(link) {
+  if (link.outcome === 'none') return '';
+  if (link.outcome === 'verified') {
+    return section_('Interactive market report', linkButton_(link.url, 'Open the interactive market report') +
+      text_('font-size:12px;line-height:18px;color:' + MUTED + ';padding-top:8px;', 'Opens the full interactive dashboard in your browser.'));
+  }
+  return section_('Interactive market report', text_('font-size:13px;line-height:19px;color:' + INK + ';padding-bottom:6px;',
+    'The interactive market report could not be confirmed online when this e-mail was sent. It is available in the downloadable workflow artifact below; GitHub sign-in is required.'));
+}
+
+function deliverablesText_(link) {
+  if (link.outcome === 'none') return 'The full interactive HTML dashboard, the Markdown report and the CSV data are in one downloadable file. Open the page, sign in to GitHub, download the archive and open the HTML file in a browser. The files are kept for 14 days.';
+  return 'The interactive market report, the interactive HTML dashboard, the Markdown report and the CSV data are in one downloadable file. Open the page, sign in to GitHub, download the archive and open the HTML files in a browser. The files are kept for 14 days.';
+}
+
+function reportLinkText_(link) {
+  if (link.outcome === 'verified') return '\n\nInteractive market report: ' + link.url;
+  if (link.outcome === 'unavailable') return '\n\nThe interactive market report could not be confirmed online when this e-mail was sent. It is available in the downloadable workflow artifact above (GitHub sign-in required).';
+  return '';
 }
 
 function chartBlobs_(report) {

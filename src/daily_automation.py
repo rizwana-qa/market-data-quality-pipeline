@@ -7,7 +7,9 @@ Run by the GitHub Actions workflow (see .github/workflows/daily-market-analysis.
     python3 src/daily_automation.py post --action upsert_analysis|verify_analysis|send_success_email --dir automation_out
     python3 src/daily_automation.py post --action send_success_report --dir automation_out --artifact-url URL     (the HTML e-mail; the workflow uses this one)
     python3 src/daily_automation.py notify-failure --dir automation_out --run-id ID --run-url URL --outcome step=outcome ...
-    python3 src/daily_automation.py stage-deliverables --reports-dir reports --dashboard-dir dashboard_out --out-dir deliverables --date YYYY-MM-DD
+    python3 src/daily_automation.py build-interactive-report --reports-dir reports --out-dir interactive_out --date YYYY-MM-DD
+    python3 src/daily_automation.py stage-deliverables --reports-dir reports --dashboard-dir dashboard_out --interactive-dir interactive_out --out-dir deliverables --date YYYY-MM-DD
+    python3 src/daily_automation.py verify-pages --date YYYY-MM-DD --file pages-site/reports/YYYY-MM-DD/market_intelligence_report.html     (never fails the run: it reports verified or unavailable)
     python3 -I -S src/daily_automation.py self-check    (read-only: checks the web app's configuration; writes no row and sends no email)
 
 The three commands that read the secrets (post, notify-failure, self-check) use the standard library only and are started with python3 -I -S: no site module, no PYTHON*
@@ -57,6 +59,7 @@ STAGE_ORDER = [
     "analysis",
     "validate_outputs",
     "build_dashboard",
+    "build_interactive_report",
     "stage_deliverables",
     "prepare_pages",
     "publish_pages",
@@ -64,6 +67,7 @@ STAGE_ORDER = [
     "post_to_sheet",
     "verify_sheet",
     "upload_deliverables",
+    "verify_pages",
     "send_success_email",
     "summarize_run",
     "upload_artifacts",
@@ -75,12 +79,14 @@ SERVER_STAGE = {
     "prepare_pages": "validate_outputs",
     "publish_pages": "upload_artifacts",
     "stage_deliverables": "validate_outputs",
+    "build_interactive_report": "validate_outputs",
+    "verify_pages": "upload_artifacts",
     "upload_deliverables": "upload_artifacts",
     "summarize_run": "upload_artifacts",
 }
 # ^ apps_script/Code.gs accepts only the stage names in its own STAGES list. A workflow step it does not know is reported as the nearest stage it does know; the real step name stays in the error summary.
 #   Every other step name is sent unchanged. Nothing is added to Code.gs, so the deployed web app needs no change.
-DELIVERABLE_NAMES = ("report_{day}.md", "report_{day}_data.csv", "dashboard_{day}.html")      # exactly the three files that are staged, for one analysis date
+DELIVERABLE_NAMES = ("report_{day}.md", "report_{day}_data.csv", "dashboard_{day}.html", "market_intelligence_report_{day}.html")      # exactly the four files that are staged, for one analysis date
 ANALYSIS_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 FETCHED_TIME_FORMAT = "%Y-%m-%d %H:%M:%S UTC"       # how the report writes its 'Data fetched' time (always UTC)
 MAX_DASHBOARD_BYTES = 16 * 1024 * 1024              # the approved dashboard is about 4.9 MB because it embeds Plotly.js; a file far beyond that is not that page
@@ -103,6 +109,13 @@ ARTIFACT_URL_PATTERN = re.compile(r"https://github\.com/rizwana-qa/market-data-q
 MAX_REQUEST_CHARS = 19000                                       # the web app refuses a request body of more than 20,000 characters; the client never sends more than this (same value as email_report.MAX_REQUEST_CHARS)
 REQUEST_EXTRAS_CHARS = 400                                      # what is added when a report request is posted: the token, the artifact link and the sheet counts
 REPORT_REQUEST_KEYS = {"action", "analysis_date", "rows", "run_id", "workflow_url", "validation_status", "summary", "report", "sheet_update", "artifact_url"}
+REPORT_LINK_KEYS = {"report_url", "report_link_status"}           # optional, never both; sent only to a web app whose self_check says report_link_supported is true
+PAGES_REPORT_URL = "https://rizwana-qa.github.io/market-data-quality-pipeline/reports/{day}/market_intelligence_report.html"     # built here from the analysis date, never taken from a file or the environment
+PAGES_VERIFY_DEADLINE_SECONDS = 240                               # how long the published report is waited for (the first Pages build is usually online after about 30 s)
+PAGES_VERIFY_INTERVAL_SECONDS = 10
+PAGES_REQUEST_TIMEOUT = 15
+MAX_PAGES_REPORT_BYTES = 4 * 1024 * 1024
+MAX_INTERACTIVE_REPORT_BYTES = 2 * 1024 * 1024                    # the approved report is about 58 KB
 REPORT_PARTS = {"meta", "assets", "pair", "coverage", "charts"}
 REPORT_OPTIONAL_PARTS = {"comparison", "validation"}               # sent by this client; an older client sends neither, and the web app accepts both shapes
 REPORT_CHART_IDS = ["indexed", "returns", "drawdown"]
@@ -290,12 +303,24 @@ def check_artifact_url(artifact_url, run_id):
     return artifact_url
 
 
+def check_report_link(payload):
+    """The optional report link of a stored or built success report request: report_url must be exactly the dated Pages address of THIS request's analysis date, and report_link_status
+    can only be 'unavailable'. Anything else (another host, another date, a query, a verified status without an address) is refused and not repeated in the message."""
+    if "report_url" in payload:
+        if not isinstance(payload["report_url"], str) or payload["report_url"] != PAGES_REPORT_URL.format(day=check_analysis_date(payload.get("analysis_date")).isoformat()):
+            raise AutomationError("the report link is not the Pages address of this analysis date, so no success report is sent")
+    elif "report_link_status" in payload and payload["report_link_status"] != "unavailable":
+        raise AutomationError("the report link status can only be 'unavailable', so no success report is sent")
+
+
 def check_report_request(payload):
     """A last, light check of the stored report request (the file may have been altered between the steps): the exact fields, this run's own addresses, three chart files that really are PNG images
     within the size limit. The web app validates everything again; this uses the standard library only because the posting commands run without the project's other modules."""
-    if set(payload) != REPORT_REQUEST_KEYS:
+    extra = set(payload) - REPORT_REQUEST_KEYS
+    if not REPORT_REQUEST_KEYS <= set(payload) or not extra <= REPORT_LINK_KEYS or len(extra) > 1:
         raise AutomationError("the success report request does not have exactly the expected fields")
     check_run_url(payload["workflow_url"], check_run_id(payload["run_id"]))
+    check_report_link(payload)
     report = payload["report"]
     if not isinstance(report, dict) or not REPORT_PARTS <= set(report) or set(report) - REPORT_PARTS - REPORT_OPTIONAL_PARTS or not isinstance(report["charts"], list) or len(report["charts"]) != len(REPORT_CHART_IDS):
         raise AutomationError("the success report is incomplete: it needs its figures and exactly three charts")
@@ -458,6 +483,7 @@ def _post_once(url, body):
 
 
 CAPABILITY_FLAG = "report_evidence_supported"       # set by an updated Code.gs in its self_check reply; an older deployed script does not send it
+LINK_CAPABILITY_FLAG = "report_link_supported"      # a separate flag: set only by a Code.gs that accepts report_url / report_link_status; it never replaces the evidence flag above
 
 
 def preflight_web_app(url, token):
@@ -473,6 +499,30 @@ def preflight_web_app(url, token):
     cleaned = clean_self_check(reply, attempts)
     if "properties" in cleaned and cleaned.get(CAPABILITY_FLAG) is not True:         # a normal self_check answer without the flag: an outdated script (an error answer, e.g. a wrong token, is left to the first request to report)
         raise AutomationError("the deployed Apps Script does not support the evidence-backed report this run sends (deploy the updated Code.gs first); the sheet was not touched", attempts=attempts, delivery="not_sent")
+
+
+def report_link_supported(url, token):
+    """True only if the deployed web app answers a normal read-only self_check with report_link_supported exactly true. A missing, false or non-boolean flag, an error answer or no answer at all
+    is False, and the success report is then sent without the link fields (an older web app refuses unknown fields)."""
+    try:
+        reply, attempts = post_action(url, {"action": "self_check", "expected_sheet_name": EXPECTED_SHEET_NAME}, token)
+    except AutomationError:
+        return False
+    return clean_self_check(reply, attempts).get(LINK_CAPABILITY_FLAG) is True
+
+
+def with_report_link(payload, state, url, token):
+    """The success report request with its optional link field, or the unchanged request when the web app does not support the link. The address is built from the request's own analysis date."""
+    if not report_link_supported(url, token):
+        print("NOTICE: the deployed Apps Script does not report report_link_supported: true, so the success report is sent without a report link (the e-mail carries the artifact link only)", file=sys.stderr)
+        return payload
+    linked = dict(payload)
+    if state == "verified":
+        linked["report_url"] = PAGES_REPORT_URL.format(day=check_analysis_date(payload.get("analysis_date")).isoformat())
+    else:
+        linked["report_link_status"] = "unavailable"
+    check_report_request(linked)
+    return linked
 
 
 def post_action(url, payload, token, attempts=MAX_ATTEMPTS):
@@ -864,6 +914,8 @@ def command_post(args, env, today):
     secrets = secrets_to_hide(env)
     if (args.artifact_url is not None) != (action == REPORT_ACTION):
         raise AutomationError(f"--artifact-url is required by {REPORT_ACTION} and used by no other action" if action == REPORT_ACTION else f"--artifact-url is only used by {REPORT_ACTION}, not by {action}")
+    if args.report_link is not None and action != REPORT_ACTION:
+        raise AutomationError(f"--report-link is only used by {REPORT_ACTION}, not by {action}")
     path = folder / f"{action}.json"
     if not path.is_file():
         raise AutomationError(f"{path.name} was not found in {folder.name}; the payload step must run first")
@@ -889,6 +941,8 @@ def command_post(args, env, today):
         url, token = read_secrets(env)
         if action == "upsert_analysis" and context is not None and f"{REPORT_ACTION}.json" in context["payloads"]:       # the run will send the evidence-backed report: check the web app BEFORE the first write
             preflight_web_app(url, token)
+        if action == REPORT_ACTION and args.report_link is not None:                       # after the preflight, so a web app without the capability is never sent a field it would refuse
+            payload = with_report_link(payload, "verified" if args.report_link == "verified" else "unavailable", url, token)       # fail-safe: only the exact word 'verified' ever produces a Pages link
         reply, attempts = post_action(url, payload, token)
     except AutomationError as error:
         result = {"success": False, "error": "NOT_SENT" if error.delivery == "not_sent" else "TRANSPORT", "sheet_status": _sheet_status_after_transport_failure(error), "email_status": "not_attempted", "attempts": error.attempts}
@@ -980,7 +1034,7 @@ def command_notify_failure(args, env, today):
 def clean_self_check(reply, attempts):
     """The self-check reply keeps only booleans and the six property flags; anything else the web app sends is dropped."""
     kept = {}
-    for name in ("success", *SELF_CHECK_FLAGS, CAPABILITY_FLAG):
+    for name in ("success", *SELF_CHECK_FLAGS, CAPABILITY_FLAG, LINK_CAPABILITY_FLAG):
         if isinstance(reply.get(name), bool):
             kept[name] = reply[name]
     properties = reply.get("properties")
@@ -1134,15 +1188,56 @@ def _dashboard_data(page, name):
     return data
 
 
-def validate_deliverables(reports_dir, dashboard_dir, day):
-    """Check the report, the CSV and the dashboard of one analysis date against the project's own data contract and against each other.
+def _interactive():
+    import interactive_report                      # imported here: only the commands that build or stage the report need it; the commands that hold the secrets never load it
+    return interactive_report
+
+
+def read_dataset(reports_dir, day):
+    """The validated dataset of the analysis date's CSV (the 17-column contract, real consecutive dates, valid numbers, ending on the analysis date) and the CSV bytes it was read from."""
+    dashboard = _dashboard()
+    iso = day.isoformat()
+    csv_name = DELIVERABLE_NAMES[1].format(day=iso)
+    csv_bytes = _read_source(reports_dir, csv_name, dashboard.MAX_CSV_BYTES)
+    try:
+        dataset = dashboard.parse_dataset(_text_of(csv_bytes, csv_name))
+    except dashboard.DashboardInputError as error:
+        raise AutomationError(f"the CSV {csv_name} is not valid: {safe_text(error)}")
+    if dataset["dates"][-1] != iso:
+        raise AutomationError(f"the CSV {csv_name} ends on {dataset['dates'][-1]}, not on the analysis date {iso}")
+    return dataset, csv_bytes
+
+
+def render_interactive_report(dataset):
+    module = _interactive()
+    try:
+        return module.render(dataset)
+    except (module.InteractiveReportError, ValueError, ArithmeticError) as error:
+        raise AutomationError(f"the interactive market report could not be built from the CSV: {safe_text(error)}")
+
+
+def command_build_interactive_report(args, env, today):
+    """Build market_intelligence_report_<date>.html from the validated CSV of the analysis date, in a new folder. Deterministic: the same CSV always gives the same bytes."""
+    day = check_analysis_date(args.date)
+    _check_output_folder(Path(args.out_dir))
+    dataset, _ = read_dataset(args.reports_dir, day)
+    name = DELIVERABLE_NAMES[3].format(day=day.isoformat())
+    data = render_interactive_report(dataset)
+    stage_files({name: data}, args.out_dir)
+    print(f"build-interactive-report: OK, {name} ({len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()}) for {day.isoformat()} written to {args.out_dir}")
+    return 0
+
+
+def validate_deliverables(reports_dir, dashboard_dir, day, interactive_dir):
+    """Check the report, the CSV, the dashboard and the interactive market report of one analysis date against the project's own data contract and against each other.
     Everything is read once and checked BEFORE anything is written; the returned bytes are exactly the validated bytes. Returns {file name: bytes}."""
     dashboard = _dashboard()
     iso = day.isoformat()
-    report_name, csv_name, page_name = (pattern.format(day=iso) for pattern in DELIVERABLE_NAMES)
+    report_name, csv_name, page_name, interactive_name = (pattern.format(day=iso) for pattern in DELIVERABLE_NAMES)
     csv_bytes = _read_source(reports_dir, csv_name, dashboard.MAX_CSV_BYTES)
     report_bytes = _read_source(reports_dir, report_name, dashboard.MAX_REPORT_BYTES)
     page_bytes = _read_source(dashboard_dir, page_name, MAX_DASHBOARD_BYTES)
+    interactive_bytes = _read_source(interactive_dir, interactive_name, MAX_INTERACTIVE_REPORT_BYTES)
 
     try:                                                                      # the CSV: the 17-column contract, real consecutive dates, valid numbers; and it must end on the analysis date
         dataset = dashboard.parse_dataset(_text_of(csv_bytes, csv_name))
@@ -1175,7 +1270,9 @@ def validate_deliverables(reports_dir, dashboard_dir, day):
         problems.append("its embedded data differs from the CSV")
     if problems:
         raise AutomationError(f"the dashboard {page_name} does not match the CSV and the report of {iso}: " + "; ".join(problems))
-    return {report_name: report_bytes, csv_name: csv_bytes, page_name: page_bytes}
+    if interactive_bytes != render_interactive_report(dataset):                  # the generator is deterministic: the staged report must be exactly what this CSV produces
+        raise AutomationError(f"the interactive market report {interactive_name} is not the report that the CSV {csv_name} produces")
+    return {report_name: report_bytes, csv_name: csv_bytes, page_name: page_bytes, interactive_name: interactive_bytes}
 
 
 def _check_output_folder(out):
@@ -1212,14 +1309,80 @@ def stage_files(files, out_dir):
 
 
 def command_stage_deliverables(args, env, today):
-    """Stage report_<date>.md, report_<date>_data.csv and dashboard_<date>.html as one validated set. Exit 0 only if all three are consistent and were published together."""
+    """Stage report_<date>.md, report_<date>_data.csv, dashboard_<date>.html and market_intelligence_report_<date>.html as one validated set. Exit 0 only if all four are consistent and were published together."""
     day = check_analysis_date(args.date)
     _check_output_folder(Path(args.out_dir))
-    files = validate_deliverables(args.reports_dir, args.dashboard_dir, day)
+    files = validate_deliverables(args.reports_dir, args.dashboard_dir, day, args.interactive_dir)
     stage_files(files, args.out_dir)
     print(f"stage-deliverables: OK, {len(files)} files for {day.isoformat()} staged in {args.out_dir}")
     for name, data in files.items():
         print(f"  {Path(args.out_dir) / name} ({len(data)} bytes)")
+    return 0
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None                                   # the exact address must answer 200 itself; a redirect is not a published report
+
+
+def _http_get(url):
+    """(status, body) of one GET, or (None, b'') when there was no HTTP answer. Never follows a redirect; the body is limited. A separate function so that tests can replace it."""
+    request = urllib.request.Request(url, headers={"Cache-Control": "no-cache", "User-Agent": "daily-market-analysis-pages-check"})
+    try:
+        with urllib.request.build_opener(_NoRedirects).open(request, timeout=PAGES_REQUEST_TIMEOUT) as response:
+            return response.status, response.read(MAX_PAGES_REPORT_BYTES + 1)
+    except urllib.error.HTTPError as error:
+        return error.code, b""
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError):
+        return None, b""
+
+
+def verify_pages_report(day, expected_sha256, fetch=None, sleep=None, clock=None):
+    """('verified' | 'unavailable', detail): the dated Pages report answers HTTP 200 and its bytes hash to expected_sha256, within a bounded time.
+
+    Temporary answers (404, 5xx, no answer, a body that is not the staged file yet) are retried every PAGES_VERIFY_INTERVAL_SECONDS until PAGES_VERIFY_DEADLINE_SECONDS have passed.
+    The probe first asks for a cache-busting variant of the address (a 404 that a probe causes must not be cached for the real address), then for the exact address, which must itself answer 200 with the same bytes."""
+    fetch, sleep, clock = fetch or _http_get, sleep or pause, clock or time.monotonic
+    url = PAGES_REPORT_URL.format(day=day)
+    started, last, attempt = clock(), "no attempt was made", 0
+    while True:
+        attempt += 1
+        for probe in (f"{url}?check={expected_sha256[:12]}-{attempt}", url):
+            status, body = fetch(probe)
+            if status != 200:
+                last = f"attempt {attempt}: HTTP {status if status is not None else 'no answer'}"
+                break
+            if len(body) > MAX_PAGES_REPORT_BYTES or hashlib.sha256(body).hexdigest() != expected_sha256:
+                last = f"attempt {attempt}: HTTP 200 but the content is not the published report"
+                break
+        else:
+            return "verified", f"HTTP 200 and the SHA-256 matches after {attempt} attempt(s)"
+        if clock() - started + PAGES_VERIFY_INTERVAL_SECONDS > PAGES_VERIFY_DEADLINE_SECONDS:
+            return "unavailable", f"not confirmed within {PAGES_VERIFY_DEADLINE_SECONDS} s ({last})"
+        sleep(PAGES_VERIFY_INTERVAL_SECONDS)
+
+
+def command_verify_pages(args, env, today):
+    """Confirm that the report just published to GitHub Pages is online and identical to the staged file. It never fails the run because of the answer: 'unavailable' makes the success e-mail carry the artifact link instead."""
+    state, detail = "unavailable", "the staged report could not be read"
+    try:
+        day = check_analysis_date(args.date).isoformat()
+        staged = Path(args.file)
+        if staged.is_symlink() or not staged.is_file() or staged.stat().st_size > MAX_INTERACTIVE_REPORT_BYTES:
+            raise AutomationError("the staged report is missing, is a link or is too large")
+        state, detail = verify_pages_report(day, hashlib.sha256(staged.read_bytes()).hexdigest())
+    except Exception as error:                                                   # deliberately broad: whatever goes wrong here, the e-mail must still be sent with the artifact link
+        state, detail = "unavailable", safe_text(error if isinstance(error, AutomationError) else f"{type(error).__name__}: {error}")
+    print(f"verify-pages: {state.upper()}: {detail}")
+    if state != "verified":
+        print(f"::warning::The interactive report was not confirmed on GitHub Pages ({detail}); the success e-mail will carry the artifact link instead.")
+    output = env.get("GITHUB_OUTPUT")
+    if output:
+        try:
+            with open(output, "a", encoding="utf-8") as handle:
+                handle.write(f"report_link={state}\n")
+        except OSError:
+            print("::warning::The verify-pages result could not be written to the step output; the success e-mail will carry the artifact link instead.")
     return 0
 
 
@@ -1269,6 +1432,7 @@ def build_parser():
     post.add_argument("--action", required=True, choices=POST_ACTIONS)
     post.add_argument("--dir", required=True)
     post.add_argument("--artifact-url", help="the artifact page of this run (the upload step's artifact-url output); required by, and only used by, send_success_report")
+    post.add_argument("--report-link", help="the verify-pages result: exactly 'verified' adds report_url, anything else (unavailable, empty) adds report_link_status unavailable; only to send_success_report and only if the web app reports report_link_supported: true")
     notify = commands.add_parser("notify-failure", help="send the failure e-mail request")
     notify.add_argument("--dir", required=True)
     notify.add_argument("--run-id", required=True)
@@ -1280,15 +1444,23 @@ def build_parser():
     summary.add_argument("--run-attempt", required=True)
     summary.add_argument("--outcome", action="append", default=[], help="step=outcome, repeated for every step")
     commands.add_parser("self-check", help="read-only check of the web app's configuration (no rows written, no email sent)")
-    staging = commands.add_parser("stage-deliverables", help="check the report, CSV and dashboard of one analysis date and stage exactly those three files in a new folder")
+    interactive = commands.add_parser("build-interactive-report", help="build the interactive market report of one analysis date from its validated CSV, in a new folder")
+    interactive.add_argument("--reports-dir", required=True, help="folder with report_<date>_data.csv")
+    interactive.add_argument("--out-dir", required=True, help="the new folder for market_intelligence_report_<date>.html (must not exist or must be empty)")
+    interactive.add_argument("--date", required=True, help="the analysis date, YYYY-MM-DD")
+    pages = commands.add_parser("verify-pages", help="confirm that the dated interactive report is online on GitHub Pages and identical to the staged file")
+    pages.add_argument("--date", required=True, help="the analysis date, YYYY-MM-DD")
+    pages.add_argument("--file", required=True, help="the staged report that was published")
+    staging = commands.add_parser("stage-deliverables", help="check the report, CSV, dashboard and interactive report of one analysis date and stage exactly those four files in a new folder")
     staging.add_argument("--reports-dir", required=True, help="folder with report_<date>.md and report_<date>_data.csv")
     staging.add_argument("--dashboard-dir", required=True, help="folder with dashboard_<date>.html")
-    staging.add_argument("--out-dir", required=True, help="the new folder for the three files (must not exist or must be empty)")
+    staging.add_argument("--interactive-dir", required=True, help="folder with market_intelligence_report_<date>.html")
+    staging.add_argument("--out-dir", required=True, help="the new folder for the four files (must not exist or must be empty)")
     staging.add_argument("--date", required=True, help="the analysis date, YYYY-MM-DD")
     return parser
 
 
-COMMANDS = {"validate": command_validate, "build-payload": command_build_payload, "post": command_post, "notify-failure": command_notify_failure, "self-check": command_self_check, "stage-deliverables": command_stage_deliverables, "summarize-run": command_summarize_run}
+COMMANDS = {"validate": command_validate, "build-payload": command_build_payload, "post": command_post, "notify-failure": command_notify_failure, "self-check": command_self_check, "stage-deliverables": command_stage_deliverables, "build-interactive-report": command_build_interactive_report, "verify-pages": command_verify_pages, "summarize-run": command_summarize_run}
 
 
 def main(argv=None, env=None, now=None):

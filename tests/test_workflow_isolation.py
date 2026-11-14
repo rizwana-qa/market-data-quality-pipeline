@@ -24,10 +24,10 @@ R = Runner("workflow isolation checks")
 
 PROD_GUARD = "    if: github.ref == 'refs/heads/main'\n"
 TEST_GUARD = "    if: github.ref == 'refs/heads/deploy/evidence-pipeline'\n"
-PRODUCTION_BEFORE_GUARD_SHA256 = "29c78766dc04e4ec21c48d769c2ccf91db3a12df8ac84e01c440e74ec4d82cd6"     # the production file as approved, before the main guard line was added
+PRODUCTION_BEFORE_GUARD_SHA256 = "1ff461abf1822299eb72668331a2bdeb60f48f2b6779ec37569c1a0cd0200f3a"     # the production file with the interactive report release (build, publish, verify), before the main guard line is counted; the previous pin was 29c78766...82cd6 (before the interactive report)
 TEST_SECRETS = {"MDQ_TEST_APPS_SCRIPT_URL", "MDQ_TEST_APPS_SCRIPT_TOKEN"}
 PRODUCTION_SECRETS = {"GOOGLE_APPS_SCRIPT_URL", "GOOGLE_APPS_SCRIPT_TOKEN", "GITHUB_TOKEN"}
-PAGES_STEP_IDS = ("prepare_pages", "publish_pages")
+PAGES_STEP_IDS = ("prepare_pages", "publish_pages", "verify_pages")          # the test copy publishes nothing, so it neither prepares, publishes nor verifies a Pages page
 
 
 def steps(text):
@@ -114,17 +114,22 @@ def _():
         assert "          GOOGLE_APPS_SCRIPT_TOKEN: ${{ secrets.MDQ_TEST_APPS_SCRIPT_TOKEN }}\n" in block, step_id
 
 
-@R.register("test workflow: it is production's step list minus exactly the two Pages steps, and every shared step runs the same commands")
+@R.register("test workflow: it is production's step list minus exactly the three Pages steps, and every shared step runs the same commands (the e-mail step differs only in its fixed 'unavailable' report link)")
 def _():
     assert [i for i in PROD_STEPS if i not in PAGES_STEP_IDS] == list(TEST_STEPS), (list(PROD_STEPS), list(TEST_STEPS))
     run_of = lambda block: (re.search(r"^        run: \|\n((?:          .*\n?)+)", block, re.M) or [None, None])[1]
     for step_id, block in TEST_STEPS.items():
         if step_id == "notify_failure":
             continue
-        assert run_of(block) == run_of(PROD_STEPS[step_id]), step_id
+        without_comments = lambda text: None if text is None else "".join(line for line in text.splitlines(keepends=True) if not line.lstrip().startswith("#"))
+        expected_run = without_comments(run_of(PROD_STEPS[step_id]))
+        if step_id == "send_success_email":
+            assert expected_run.count('--report-link "$REPORT_LINK"') == 1
+            expected_run = expected_run.replace('--report-link "$REPORT_LINK"', "--report-link unavailable")          # no Pages in the test copy: the e-mail always carries the artifact fallback
+        assert without_comments(run_of(block)) == expected_run, step_id
         uses = lambda text: re.findall(r"^        uses: (.+)$", text, re.M)
         assert uses(block) == uses(PROD_STEPS[step_id]), step_id
-    expected = re.sub(r'            --outcome "(?:prepare|publish)_pages=\$OUTCOME_[A-Z_]+" \\\n', "", run_of(PROD_STEPS["notify_failure"]))
+    expected = re.sub(r'            --outcome "(?:prepare|publish|verify)_pages=\$OUTCOME_[A-Z_]+" \\\n', "", run_of(PROD_STEPS["notify_failure"]))
     assert run_of(TEST_STEPS["notify_failure"]) == expected
 
 
@@ -168,7 +173,7 @@ def _():
 @R.register("failure notification: control - an EMPTY outcome, which is what a removed Pages step would give, is rejected; this is why the test workflow does not pass those two outcomes")
 def _():
     names = notify_outcome_arguments(TEST)
-    pairs = [f"{name}={'failure' if name == 'analysis' else 'success'}" for name in names] + ["prepare_pages=", "publish_pages="]
+    pairs = [f"{name}={'failure' if name == 'analysis' else 'success'}" for name in names] + ["prepare_pages=", "publish_pages=", "verify_pages="]
     code, err = _run_notify(pairs)
     assert code == 1 and "--outcome must look like" in err, err
 
@@ -198,7 +203,7 @@ def _():
     assert section(PROD, "on") == '  schedule:\n    - cron: "0 4 * * *"\n  workflow_dispatch:\n'
     assert section(PROD, "concurrency") == "  group: daily-market-analysis\n  cancel-in-progress: false\n"
     assert section(PROD, "permissions") == "  contents: write\n"
-    assert list(PROD_STEPS)[9:11] == list(PAGES_STEP_IDS), list(PROD_STEPS)
+    assert list(PROD_STEPS)[10:12] == ["prepare_pages", "publish_pages"] and list(PROD_STEPS).index("verify_pages") == list(PROD_STEPS).index("upload_deliverables") + 1, list(PROD_STEPS)
     assert "peaceiris/actions-gh-pages@" in PROD_STEPS["publish_pages"]
 
 

@@ -246,6 +246,7 @@ def _():
     assert (
         "_dashboard" not in reachable
         and "_email_report" not in reachable
+        and "_interactive" not in reachable
         and "_run_evidence" not in reachable
         and "_write_verification" not in reachable
         and not {
@@ -281,6 +282,7 @@ def _():
         ("_dashboard", "dashboard"),
         ("_run_evidence", "run_evidence"),
         ("_email_report", "email_report"),
+        ("_interactive", "interactive_report"),
     ], inside
 
 

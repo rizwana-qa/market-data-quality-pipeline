@@ -41,7 +41,7 @@ def stage(reports, dash, out, day):
     """The NEW command, called the way the workflow will call it. Returns (exit code, all output)."""
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
-        code = da.main(["stage-deliverables", "--reports-dir", reports, "--dashboard-dir", dash, "--out-dir", out, "--date", day], env={}, now=date(2026, 10, 27))
+        code = da.main(["stage-deliverables", "--reports-dir", reports, "--dashboard-dir", dash, "--interactive-dir", os.path.join(os.path.dirname(dash), "interactive_out"), "--out-dir", out, "--date", day], env={}, now=date(2026, 10, 27))
     if code == 2 and "invalid choice" in buffer.getvalue(): raise AssertionError("MISSING FEATURE: daily_automation.py has no stage-deliverables command yet (argparse: invalid choice)")
     return code, buffer.getvalue()
 def edit(path, change):

@@ -17,7 +17,8 @@ def _remove(function, path, error):
 atexit.register(shutil.rmtree, WORK, False, _remove)
 TEXT = open(os.path.join(REPO, ".github", "workflows", "daily-market-analysis.yml"), encoding="utf-8", newline="").read()
 CURRENT, STALE = "2026-10-26", "2026-10-27"          # this run's analysis date; the day of the files that are COMMITTED in the repository (and so present in every fresh checkout)
-NAMES = lambda day: [f"report_{day}.md", f"report_{day}_data.csv", f"dashboard_{day}.html"]
+NAMES = lambda day: [f"report_{day}.md", f"report_{day}_data.csv", f"dashboard_{day}.html"]            # the three files a day's committed set holds
+STAGED = lambda day: NAMES(day) + [f"market_intelligence_report_{day}.html"]                                # the four files the workflow stages for the run's own day
 
 def step_script(step_id):
     for block in re.split(r"\n(?=      - name: )", TEXT.split("    steps:\n", 1)[1]):
@@ -58,23 +59,25 @@ def validate(ws):
 def digest(path): return hashlib.sha256(open(path, "rb").read()).hexdigest()
 def listing(folder): return sorted(os.listdir(folder)) if os.path.isdir(folder) else None
 
-@R.register("the whole path works: cleanup, this run's analysis and validation, dashboard, staging - exactly the three files of the validated date end up in deliverables/, byte-identical to their sources")
+@R.register("the whole path works: cleanup, this run's analysis and validation, dashboard, staging - exactly the four files of the validated date end up in deliverables/, byte-identical to their sources")
 def _():
     ws = checkout(); code, text = run_step(ws, "clear_stale_outputs"); assert code == 0, text
     assert listing(os.path.join(ws, "reports")) == [], f"the committed stale files are still in the checkout: {listing(os.path.join(ws, 'reports'))}"
     analysis(ws); code, analysis_date = validate(ws); assert code == 0 and analysis_date == CURRENT, (code, analysis_date)
     code, text = run_step(ws, "build_dashboard", {"ANALYSIS_DATE": analysis_date}); assert code == 0, text
     assert listing(os.path.join(ws, "dashboard_out")) == [f"dashboard_{CURRENT}.html"], listing(os.path.join(ws, "dashboard_out"))
+    code, text = run_step(ws, "build_interactive_report", {"ANALYSIS_DATE": analysis_date}); assert code == 0, text
+    assert listing(os.path.join(ws, "interactive_out")) == [f"market_intelligence_report_{CURRENT}.html"], listing(os.path.join(ws, "interactive_out"))
     code, text = run_step(ws, "stage_deliverables", {"ANALYSIS_DATE": analysis_date}); assert code == 0, text
-    assert listing(os.path.join(ws, "deliverables")) == sorted(NAMES(CURRENT)), listing(os.path.join(ws, "deliverables"))
-    for name in NAMES(CURRENT):
-        source = os.path.join(ws, "dashboard_out" if name.startswith("dashboard") else "reports", name); assert digest(os.path.join(ws, "deliverables", name)) == digest(source), name
+    assert listing(os.path.join(ws, "deliverables")) == sorted(STAGED(CURRENT)), listing(os.path.join(ws, "deliverables"))
+    for name in STAGED(CURRENT):
+        source = os.path.join(ws, "dashboard_out" if name.startswith("dashboard") else "interactive_out" if name.startswith("market_intelligence") else "reports", name); assert digest(os.path.join(ws, "deliverables", name)) == digest(source), name
     assert not any(STALE in name for folder in ("reports", "dashboard_out", "deliverables") for name in listing(os.path.join(ws, folder))), "a stale file of the committed day is present"
 
 @R.register("the committed dashboard is not touched by the pipeline and the dashboard of the run is a NEW file: the staged dashboard names this run's CSV and report")
 def _():
     ws = checkout(); committed = digest(os.path.join(ws, "reports", f"dashboard_{STALE}.html")); run_step(ws, "clear_stale_outputs"); analysis(ws); code, analysis_date = validate(ws)
-    assert run_step(ws, "build_dashboard", {"ANALYSIS_DATE": analysis_date})[0] == 0 and run_step(ws, "stage_deliverables", {"ANALYSIS_DATE": analysis_date})[0] == 0
+    assert run_step(ws, "build_dashboard", {"ANALYSIS_DATE": analysis_date})[0] == 0 and run_step(ws, "build_interactive_report", {"ANALYSIS_DATE": analysis_date})[0] == 0 and run_step(ws, "stage_deliverables", {"ANALYSIS_DATE": analysis_date})[0] == 0
     page = open(os.path.join(ws, "deliverables", f"dashboard_{CURRENT}.html"), encoding="utf-8").read()
     assert f'"csv_file":"report_{CURRENT}_data.csv"' in page and f'"report_file":"report_{CURRENT}.md"' in page and digest(os.path.join(ws, "deliverables", f"dashboard_{CURRENT}.html")) != committed
     assert digest(os.path.join(REPO, "reports", f"dashboard_{STALE}.html")) == committed, "the committed dashboard in the repository changed"

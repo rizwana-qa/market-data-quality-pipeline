@@ -89,14 +89,22 @@ jobs:
           mkdir -p dashboard_out
           python3 src/dashboard.py --reports-dir reports --out-dir dashboard_out --date "$ANALYSIS_DATE"
 
-      - name: Check and stage the report, CSV and dashboard
+      - name: Build the interactive market report from this run's CSV
+        id: build_interactive_report
+        env:
+          ANALYSIS_DATE: ${{ steps.validate_outputs.outputs.analysis_date }}
+        timeout-minutes: 3
+        run: |
+          python3 src/daily_automation.py build-interactive-report --reports-dir reports --out-dir interactive_out --date "$ANALYSIS_DATE"
+
+      - name: Check and stage the report, CSV, dashboard and interactive report
         id: stage_deliverables
         env:
           ANALYSIS_DATE: ${{ steps.validate_outputs.outputs.analysis_date }}
         timeout-minutes: 3
         run: |
           python3 src/daily_automation.py stage-deliverables --reports-dir reports --dashboard-dir dashboard_out \
-            --out-dir deliverables --date "$ANALYSIS_DATE"
+            --interactive-dir interactive_out --out-dir deliverables --date "$ANALYSIS_DATE"
 
       - name: Build the sheet payloads
         id: build_payload
@@ -144,7 +152,8 @@ jobs:
           ARTIFACT_URL: ${{ steps.upload_deliverables.outputs.artifact-url }}
         timeout-minutes: 8
         run: |
-          python3 -I -S src/daily_automation.py post --action send_success_report --dir automation_out --artifact-url "$ARTIFACT_URL"
+          # This test copy never publishes GitHub Pages, so the report link is always 'unavailable' here: the e-mail carries the artifact fallback.
+          python3 -I -S src/daily_automation.py post --action send_success_report --dir automation_out --artifact-url "$ARTIFACT_URL" --report-link unavailable
 
       - name: Summarise the run status
         id: summarize_run
@@ -194,6 +203,7 @@ jobs:
           OUTCOME_ANALYSIS: ${{ steps.analysis.outcome }}
           OUTCOME_VALIDATE_OUTPUTS: ${{ steps.validate_outputs.outcome }}
           OUTCOME_BUILD_DASHBOARD: ${{ steps.build_dashboard.outcome }}
+          OUTCOME_BUILD_INTERACTIVE_REPORT: ${{ steps.build_interactive_report.outcome }}
           OUTCOME_STAGE_DELIVERABLES: ${{ steps.stage_deliverables.outcome }}
           OUTCOME_BUILD_PAYLOAD: ${{ steps.build_payload.outcome }}
           OUTCOME_POST_TO_SHEET: ${{ steps.post_to_sheet.outcome }}
@@ -217,6 +227,7 @@ jobs:
             --outcome "analysis=$OUTCOME_ANALYSIS" \
             --outcome "validate_outputs=$OUTCOME_VALIDATE_OUTPUTS" \
             --outcome "build_dashboard=$OUTCOME_BUILD_DASHBOARD" \
+            --outcome "build_interactive_report=$OUTCOME_BUILD_INTERACTIVE_REPORT" \
             --outcome "stage_deliverables=$OUTCOME_STAGE_DELIVERABLES" \
             --outcome "build_payload=$OUTCOME_BUILD_PAYLOAD" \
             --outcome "post_to_sheet=$OUTCOME_POST_TO_SHEET" \

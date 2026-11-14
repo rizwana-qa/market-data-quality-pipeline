@@ -31,6 +31,7 @@ ORDER = [
     "analysis",
     "validate_outputs",
     "build_dashboard",
+    "build_interactive_report",
     "stage_deliverables",
     "prepare_pages",
     "publish_pages",
@@ -38,18 +39,21 @@ ORDER = [
     "post_to_sheet",
     "verify_sheet",
     "upload_deliverables",
+    "verify_pages",
     "send_success_email",
     "summarize_run",
     "upload_artifacts",
     "notify_failure",
 ]
 
-# These four steps are the original Stage 1 dashboard/deliverables additions.
+# These steps are the dashboard/deliverables additions and the interactive report additions.
 NEW_STEPS = [
     "clear_stale_outputs",
     "build_dashboard",
+    "build_interactive_report",
     "stage_deliverables",
     "upload_deliverables",
+    "verify_pages",
 ]
 
 SECRET_STEPS = [
@@ -155,7 +159,7 @@ BY_ID = {step.get("id"): step for step in STEPS}
 
 
 @R.register(
-    "the workflow contains all 19 steps in the agreed order, "
+    "the workflow contains all 21 steps in the agreed order, "
     "including dashboard staging and GitHub Pages publishing"
 )
 def _():
@@ -360,7 +364,8 @@ def _():
 
     assert re.search(
         r'daily_automation\.py post --action send_success_report '
-        r'--dir automation_out --artifact-url "\$ARTIFACT_URL"\s*$',
+        r'--dir automation_out --artifact-url "\$ARTIFACT_URL" '
+        r'--report-link "\$REPORT_LINK"\s*$',
         BY_ID["send_success_email"]["run_text"],
         re.M,
     )
@@ -549,6 +554,7 @@ def _():
         "analysis",
         "validate_outputs",
         "build_dashboard",
+        "build_interactive_report",
         "stage_deliverables",
         "prepare_pages",
         "publish_pages",
@@ -556,6 +562,7 @@ def _():
         "post_to_sheet",
         "verify_sheet",
         "upload_deliverables",
+        "verify_pages",
         "send_success_email",
     ]
 
@@ -585,6 +592,7 @@ def _():
         "analysis",
         "validate_outputs",
         "build_dashboard",
+        "build_interactive_report",
         "stage_deliverables",
         "prepare_pages",
         "publish_pages",
@@ -592,6 +600,7 @@ def _():
         "post_to_sheet",
         "verify_sheet",
         "upload_deliverables",
+        "verify_pages",
         "send_success_email",
         "upload_artifacts",
         "notify_failure",
@@ -653,6 +662,7 @@ def _():
     assert re.search(
         r'^python3 src/daily_automation\.py stage-deliverables '
         r'--reports-dir reports --dashboard-dir dashboard_out '
+        r'--interactive-dir interactive_out '
         r'--out-dir deliverables --date "\$ANALYSIS_DATE"\s*$',
         flat,
         re.M,
@@ -927,14 +937,18 @@ def _():
         "GOOGLE_APPS_SCRIPT_URL",
         "GOOGLE_APPS_SCRIPT_TOKEN",
         "ARTIFACT_URL",
+        "REPORT_LINK",
     }
+
+    assert step["env"]["REPORT_LINK"] == "${{ steps.verify_pages.outputs.report_link }}"
 
     run = step["run_text"].strip()
 
     assert run == (
         'python3 -I -S src/daily_automation.py post '
         '--action send_success_report --dir automation_out '
-        '--artifact-url "$ARTIFACT_URL"'
+        '--artifact-url "$ARTIFACT_URL" '
+        '--report-link "$REPORT_LINK"'
     ), run
 
     assert "${{" not in step["run_text"]
@@ -963,6 +977,7 @@ def _():
         "analysis",
         "validate_outputs",
         "build_dashboard",
+        "build_interactive_report",
         "stage_deliverables",
         "prepare_pages",
         "publish_pages",
@@ -970,6 +985,7 @@ def _():
         "post_to_sheet",
         "verify_sheet",
         "upload_deliverables",
+        "verify_pages",
     )
 
     for earlier in earlier_steps:

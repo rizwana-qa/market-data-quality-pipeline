@@ -9,7 +9,7 @@ PATH = os.path.join(REPO, ".github", "workflows", "daily-market-analysis.yml")
 TEXT = open(PATH, encoding="utf-8", newline="").read(); LINES = TEXT.splitlines()
 R = Runner("workflow expression checks")
 EXPRESSION = re.compile(r"\$\{\{\s*([^{}]*?)\s*\}\}")
-ALLOWED = [re.compile(p) for p in (r"secrets\.(GOOGLE_APPS_SCRIPT_URL|GOOGLE_APPS_SCRIPT_TOKEN|GITHUB_TOKEN)", r"github\.(server_url|repository|run_id|run_attempt)", r"steps\.([a-z_]+)\.outcome", r"steps\.validate_outputs\.outputs\.analysis_date", r"steps\.upload_deliverables\.outputs\.artifact-url")]
+ALLOWED = [re.compile(p) for p in (r"secrets\.(GOOGLE_APPS_SCRIPT_URL|GOOGLE_APPS_SCRIPT_TOKEN|GITHUB_TOKEN)", r"github\.(server_url|repository|run_id|run_attempt)", r"steps\.([a-z_]+)\.outcome", r"steps\.validate_outputs\.outputs\.analysis_date", r"steps\.upload_deliverables\.outputs\.artifact-url", r"steps\.verify_pages\.outputs\.report_link")]
 
 def step_blocks():
     return re.split(r"\n(?=      - name: )", TEXT.split("    steps:\n", 1)[1])
@@ -46,7 +46,7 @@ def _():
         assert section in ("env", "with"), f"line {number}: expression {expression!r} in '{section}'"
         if section == "with": assert key in ("name", "github_token", "commit_message"), f"line {number}: expression in with.{key}"
 
-@R.register("step references: every steps.<id>.outcome and steps.<id>.outputs.<name> names a step that exists AND comes earlier in the job (GitHub cannot read a later step); the only outputs read are validate_outputs.analysis_date and upload_deliverables.artifact-url; nineteen steps")
+@R.register("step references: every steps.<id>.outcome and steps.<id>.outputs.<name> names a step that exists AND comes earlier in the job (GitHub cannot read a later step); the only outputs read are validate_outputs.analysis_date, upload_deliverables.artifact-url and verify_pages.report_link; twenty-one steps")
 def _():
     outputs = set()
     for number, index, section, key, expression in expression_sites():
@@ -54,8 +54,8 @@ def _():
         if m:
             assert m.group(1) in STEP_IDS, f"line {number}: unknown step {m.group(1)}"; assert STEP_IDS.index(m.group(1)) < index, f"line {number}: step {m.group(1)} is not before step {STEP_IDS[index]}"
             if m.group(2): outputs.add((m.group(1), m.group(2)))
-    assert outputs == {("validate_outputs", "analysis_date"), ("upload_deliverables", "artifact-url")}, f"MISSING FEATURE: the staging step must read analysis_date and the e-mail step the artifact-url (found {sorted(outputs)})"
-    assert len(STEP_IDS) == len(set(STEP_IDS)) == 19, STEP_IDS
+    assert outputs == {("validate_outputs", "analysis_date"), ("upload_deliverables", "artifact-url"), ("verify_pages", "report_link")}, f"MISSING FEATURE: the staging step must read analysis_date and the e-mail step the artifact-url (found {sorted(outputs)})"
+    assert len(STEP_IDS) == len(set(STEP_IDS)) == 21, STEP_IDS
 
 @R.register("conditions: the only if: conditions are always() on the run-status step and the artifact upload and failure() on the failure notice (nothing else is conditional)")
 def _():

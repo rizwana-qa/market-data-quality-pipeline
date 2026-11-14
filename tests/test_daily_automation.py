@@ -587,7 +587,7 @@ def _():
 def _():
     source = open(os.path.join(REPO, "src", "daily_automation.py"), encoding="utf-8").read()
     for needle, why in (("verify=False", "TLS bypass"), ("shell=True", "shell"), ("os.system", "shell"), ("eval(", "eval"), ("exec(", "exec"), ("pdb", "debugger"), ("breakpoint(", "debugger"), ("AKfycb", "a deployment id")): assert needle not in source, why
-    assert not re.search(r"print\([^)]*(TOKEN|SCRIPT_URL)", source), "printing a secret variable"; assert not re.search(r"https?://(?!script\.google\.com|github\.com|api\.kraken)[A-Za-z0-9.-]+/", re.sub(r"#.*", "", source).replace("http://127.0.0.1", "")), "an unexpected URL literal"
+    assert not re.search(r"print\([^)]*(TOKEN|SCRIPT_URL)", source), "printing a secret variable"; assert not re.search(r"https?://(?!script\.google\.com|github\.com|api\.kraken|rizwana-qa\.github\.io)[A-Za-z0-9.-]+/", re.sub(r"#.*", "", source).replace("http://127.0.0.1", "")), "an unexpected URL literal"
     assert "GOOGLE_APPS_SCRIPT_URL" in source and "GOOGLE_APPS_SCRIPT_TOKEN" in source, "the existing secret names are used"
     assert "SHEETS_WEBHOOK" not in source, "no second set of secret names"
 
@@ -629,11 +629,13 @@ NEW_STEP_MAP = {
     "prepare_pages": "validate_outputs",
     "publish_pages": "upload_artifacts",
     "stage_deliverables": "validate_outputs",
+    "build_interactive_report": "validate_outputs",
+    "verify_pages": "upload_artifacts",
     "upload_deliverables": "upload_artifacts",
     "summarize_run": "upload_artifacts",          # the run-status step: Code.gs knows no such stage, so it is reported as the nearest stage it does know
 }
 @R.register(
-    "stage mapping: the pipeline order includes the four new steps, "
+    "stage mapping: the pipeline order includes the six new steps, "
     "the eleven existing step names are sent unchanged, and every "
     "name that can reach the web app is one Code.gs already accepts "
     "(its STAGES list)"
@@ -654,6 +656,7 @@ def _():
     "analysis",
     "validate_outputs",
     "build_dashboard",
+    "build_interactive_report",
     "stage_deliverables",
     "prepare_pages",
     "publish_pages",
@@ -661,6 +664,7 @@ def _():
     "post_to_sheet",
     "verify_sheet",
     "upload_deliverables",
+    "verify_pages",
     "send_success_email",
     "summarize_run",
     "upload_artifacts",
@@ -1167,5 +1171,197 @@ def _():
         seen["n"] += 1; return ("json", {"success": False, "error": "INTERNAL_ERROR", "sheet_status": "not_attempted", "email_status": "not_attempted"}) if seen["n"] == 1 else ("json", {"success": True, "action": "notify_failure", "sheet_status": "not_attempted", "email_status": "sent"})
     with served(flaky) as server:
         code, out, err, summary, result = notice(server, "tests"); assert code == 0 and seen["n"] == 2 and len(server.pauses) == 1 and result["email_status"] == "sent", (code, seen, out, err)
+
+import hashlib
+
+# ================================================================ the optional report link of the success report (report_url / report_link_status) and the capability report_link_supported
+LINK_KEYS = {"report_url", "report_link_status"}
+EXPECTED_REPORT_URL = "https://rizwana-qa.github.io/market-data-quality-pipeline/reports/2026-10-27/market_intelligence_report.html"
+
+class LinkModel(ReportModel):
+    """A web app that, like the updated Code.gs, accepts exactly one of the optional link fields next to the exact report keys. The requests it saw are kept in link_requests."""
+    def __init__(self, token=TOKEN, fmt="html", strict_old=False): super().__init__(token, fmt); self.link_requests, self.strict_old = [], strict_old
+    def __call__(self, index, payload):
+        if isinstance(payload, dict) and payload.get("token") == self.token and payload.get("action") == "send_success_report":
+            extra = set(payload) - REPORT_KEYS; self.link_requests.append(payload)
+            if extra and (self.strict_old or not extra <= LINK_KEYS or len(extra) > 1): return ("json", {"success": False, "error": "INVALID_PAYLOAD", "sheet_status": "ok", "email_status": "not_attempted"})
+            payload = {key: value for key, value in payload.items() if key not in extra}
+        return super().__call__(index, payload)
+
+def link_server(model, reply=None):
+    if reply is not None: model.self_check_reply = reply
+    return served(model)
+
+def post_with_link(server, out, link, **extra):
+    arguments = ["post", "--action", "send_success_report", "--dir", out, "--artifact-url", ARTIFACT_URL] + ([] if link is None else ["--report-link", link])
+    return run_cli(arguments, env=env_for(server, **extra))
+
+@R.register("self-check capability: clean_self_check keeps report_link_supported ONLY as a real boolean next to the unchanged evidence flag; every other value, key or type is dropped and never rejects the reply")
+def _():
+    base = self_reply()
+    for name, change, expected in (("true", {"report_link_supported": True}, True), ("false", {"report_link_supported": False}, False), ("absent", {}, None), ("string true", {"report_link_supported": "true"}, None),
+                                   ("number", {"report_link_supported": 1}, None), ("null", {"report_link_supported": None}, None), ("list", {"report_link_supported": [True]}, None), ("unknown key", {"report_link_supported": True, "brand_new": True, "x": {"a": 1}}, True)):
+        cleaned = da.clean_self_check(dict(base, **change), 1)
+        assert cleaned.get("report_link_supported") == expected and ("report_link_supported" in cleaned) == (expected is not None), (name, cleaned)
+        assert "brand_new" not in cleaned and "x" not in cleaned and cleaned["report_evidence_supported"] is True and cleaned["success"] is True and cleaned["headers_ok"] is True, (name, cleaned)
+    for flag in ("success", "spreadsheet_found", "sheet_found", "sheet_name_matches", "headers_ok", "email_valid", "report_evidence_supported"):          # the existing flags keep their original values, true and false
+        for value in (True, False): assert da.clean_self_check(dict(base, **{flag: value}), 1)[flag] is value, flag
+
+@R.register("preflight is unchanged: it still requires report_evidence_supported to be exactly true, whatever the link flag says, and a link flag alone never replaces it")
+def _():
+    for reply, ok in ((self_reply(report_link_supported=True), True), (self_reply(), True), (self_reply(report_evidence_supported=False, report_link_supported=True), False),
+                      ({k: v for k, v in self_reply(report_link_supported=True).items() if k != "report_evidence_supported"}, False), (self_reply(report_evidence_supported="true", report_link_supported=True), False)):
+        model = Model(); model.self_check_reply = reply
+        with served(model) as server:
+            try: da.preflight_web_app(server.url, TOKEN); passed = True
+            except da.AutomationError as error: passed = False; assert error.delivery == "not_sent"
+        assert passed is ok, reply
+
+@R.register("report link: the fields are sent ONLY when the web app answers self_check with report_link_supported exactly true - 'verified' adds report_url (built from the analysis date), anything else adds report_link_status unavailable, and the legacy request stays exactly as before")
+def _():
+    model = LinkModel()
+    with link_server(model, self_reply(report_link_supported=True)) as server:
+        out = verified_dir(server)
+        code, text, err = post_with_link(server, out, "verified"); assert code == 0, (text, err)
+        sent = model.link_requests[-1]; assert sent["report_url"] == EXPECTED_REPORT_URL and "report_link_status" not in sent and set(sent) == REPORT_KEYS | {"report_url"}, sent
+    for state in ("unavailable", "", "success", "Verified", "VERIFIED"):                      # fail-safe: only the exact word 'verified' ever produces a Pages link
+        model = LinkModel()
+        with link_server(model, self_reply(report_link_supported=True)) as server:
+            out = verified_dir(server); code, text, err = post_with_link(server, out, state); assert code == 0, (state, text, err)
+            sent = model.link_requests[-1]; assert sent["report_link_status"] == "unavailable" and "report_url" not in sent and set(sent) == REPORT_KEYS | {"report_link_status"}, (state, sent)
+    model = LinkModel()
+    with link_server(model, self_reply(report_link_supported=True)) as server:
+        out = verified_dir(server); before = len(model.self_check_requests); code, text, err = post_with_link(server, out, None); assert code == 0, (text, err)
+        assert set(model.link_requests[-1]) == REPORT_KEYS and len(model.self_check_requests) == before, "without --report-link the request is the legacy one and no extra self_check is made"
+
+@R.register("report link: with the capability absent, false or not a boolean, and against a strict older web app, NO link field is sent, the notice says so and the e-mail is still sent with the artifact link")
+def _():
+    for name, reply in (("absent", self_reply()), ("false", self_reply(report_link_supported=False)), ("string", self_reply(report_link_supported="true")), ("number", self_reply(report_link_supported=1)), ("null", self_reply(report_link_supported=None))):
+        for state in ("verified", "unavailable"):
+            model = LinkModel(strict_old=True)
+            with link_server(model, self_reply()) as server:
+                out = verified_dir(server); model.self_check_reply = reply                         # the preflight passed with a normal answer; the answer at e-mail time is the one under test
+                code, text, err = post_with_link(server, out, state)
+                assert code == 0 and set(model.link_requests[-1]) == REPORT_KEYS and "NOTICE" in err and "report_link_supported" in err, (name, state, code, text[-200:], err[-300:])
+                assert model.mail and model.mail[-1]["artifact_url"] == ARTIFACT_URL
+
+@R.register("report link: no self_check answer at all (the web app is down for that request) is not the capability - the report is sent without the link, never with a guess")
+def _():
+    model = LinkModel()
+    with served(model) as server:
+        out = verified_dir(server); model.self_check_reply = {"success": False, "error": "UNAUTHORIZED"}
+        code, text, err = post_with_link(server, out, "verified"); assert code == 0 and set(model.link_requests[-1]) == REPORT_KEYS and "NOTICE" in err, (code, err[-200:])
+
+@R.register("report link: the stored request and the built request refuse a malformed link - another host, another date, a query, both fields, a 'verified' status - and report_link_status is only ever 'unavailable'")
+def _():
+    out = prepared_dir(); body = read_json(out, "send_success_report.json"); body = dict(body, sheet_update={"rows_inserted": 2, "rows_updated": 0}, artifact_url=ARTIFACT_URL)
+    da.check_report_request(body); da.check_report_request(dict(body, report_url=EXPECTED_REPORT_URL)); da.check_report_request(dict(body, report_link_status="unavailable"))
+    bad = {"another date": dict(body, report_url=EXPECTED_REPORT_URL.replace("2026-10-27", "2026-10-26")), "another host": dict(body, report_url=EXPECTED_REPORT_URL.replace("rizwana-qa.github.io", "evil.example")),
+           "http": dict(body, report_url=EXPECTED_REPORT_URL.replace("https", "http")), "query": dict(body, report_url=EXPECTED_REPORT_URL + "?x=1"), "other file": dict(body, report_url=EXPECTED_REPORT_URL.replace("market_intelligence_report", "dashboard")),
+           "not text": dict(body, report_url=5), "both fields": dict(body, report_url=EXPECTED_REPORT_URL, report_link_status="unavailable"), "status verified": dict(body, report_link_status="verified"),
+           "unknown extra key": dict(body, report_hash="x"), "empty url": dict(body, report_url="")}
+    for name, payload in bad.items(): raises(da.AutomationError, lambda payload=payload: da.check_report_request(payload)), name
+
+@R.register("report link: --report-link belongs to send_success_report only; the other actions refuse it, and an altered stored request is still refused before anything is sent")
+def _():
+    model = LinkModel()
+    with link_server(model, self_reply(report_link_supported=True)) as server:
+        out = verified_dir(server); sent_before = len(model.link_requests)
+        code, text, err = run_cli(["post", "--action", "upsert_analysis", "--dir", out, "--report-link", "verified"], env=env_for(server)); assert code == 1 and "--report-link is only used by send_success_report" in err, err
+        path = os.path.join(out, "send_success_report.json"); body = read_json(out, "send_success_report.json"); body["report_url"] = EXPECTED_REPORT_URL; json.dump(body, open(path, "w", encoding="utf-8"))
+        code, text, err = post_with_link(server, out, "verified"); assert code == 1 and len(model.link_requests) == sent_before, "a stored request that was changed must not be sent"
+
+@R.register("report link: the link, the artifact and the sheet gates are independent - a refused artifact link, an unconfirmed sheet and a duplicate run each behave exactly as without a link")
+def _():
+    model = LinkModel()
+    with link_server(model, self_reply(report_link_supported=True)) as server:
+        out = verified_dir(server)
+        code, text, err = run_cli(["post", "--action", "send_success_report", "--dir", out, "--artifact-url", "https://example.invalid/x", "--report-link", "verified"], env=env_for(server)); assert code == 1 and not model.link_requests, (text, err)
+        code, text, err = post_with_link(server, out, "verified"); assert code == 0 and len(model.mail) == 1
+        code, text, err = post_with_link(server, out, "unavailable"); assert code == 0 and len(model.mail) == 1, (code, text)          # the same run and date is e-mailed once, whatever the link says
+    fresh = prepared_dir(); model = LinkModel()
+    with link_server(model, self_reply(report_link_supported=True)) as server:
+        code, text, err = post_with_link(server, fresh, "verified"); assert code == 1 and "spreadsheet update was not confirmed" in err and not model.link_requests, err
+
+# ---- GitHub Pages verification of the published report
+SHA = "ab" * 32
+def pages_clock():
+    now = [0.0]; sleeps = []
+    return (lambda: now[0]), (lambda seconds: (sleeps.append(seconds), now.__setitem__(0, now[0] + seconds))), sleeps
+
+def scripted(statuses, body=b"report", default=(404, b"")):
+    """A fetch that answers from a list, then with the default; it records every address asked for."""
+    asked, queue = [], list(statuses)
+    def fetch(url):
+        asked.append(url); return queue.pop(0) if queue else default
+    return fetch, asked
+
+@R.register("pages verification: HTTP 200 and the same SHA-256 on the first attempt -> verified, after exactly two requests (a cache-busting probe, then the exact address), no waiting")
+def _():
+    body = b"the staged report"; digest = hashlib.sha256(body).hexdigest(); clock, sleep, sleeps = pages_clock(); fetch, asked = scripted([(200, body), (200, body)])
+    state, detail = da.verify_pages_report("2026-10-27", digest, fetch, sleep, clock)
+    assert state == "verified" and sleeps == [] and len(asked) == 2 and asked[1] == EXPECTED_REPORT_URL and asked[0].startswith(EXPECTED_REPORT_URL + "?check=") and "SHA-256" in detail, (state, detail, asked)
+
+@R.register("pages verification: temporary 404 and 503 answers and a missing answer are retried every 10 s, and the page that arrives later is verified")
+def _():
+    body = b"the staged report"; digest = hashlib.sha256(body).hexdigest(); clock, sleep, sleeps = pages_clock()
+    fetch, asked = scripted([(404, b""), (503, b""), (None, b""), (200, body), (404, b""), (200, body), (200, body)])         # the last attempt: the busted address is online, the exact one still 404 once, then both are
+    state, detail = da.verify_pages_report("2026-10-27", digest, fetch, sleep, clock)
+    assert state == "verified" and sleeps == [10, 10, 10, 10] and "after 5 attempt" in detail, (state, detail, sleeps, asked)
+
+@R.register("pages verification: a 200 with different content, a redirect, a 403 and an oversized body never verify - after the bounded wait the answer is 'unavailable' with the last reason")
+def _():
+    digest = hashlib.sha256(b"the staged report").hexdigest()
+    for name, answer, reason in (("other content", (200, b"an older report"), "not the published report"), ("redirect", (301, b""), "HTTP 301"), ("forbidden", (403, b""), "HTTP 403"), ("no answer", (None, b""), "no answer"),
+                                 ("oversized", (200, b"x" * (da.MAX_PAGES_REPORT_BYTES + 1)), "not the published report"), ("empty", (200, b""), "not the published report")):
+        clock, sleep, sleeps = pages_clock(); fetch, asked = scripted([], default=answer)
+        state, detail = da.verify_pages_report("2026-10-27", digest, fetch, sleep, clock)
+        assert state == "unavailable" and reason in detail and "240 s" in detail, (name, state, detail)
+        assert sum(sleeps) <= da.PAGES_VERIFY_DEADLINE_SECONDS and len(asked) == len(sleeps) + 1, (name, sum(sleeps), len(asked))
+
+@R.register("pages verification: the wait is bounded - never more than the deadline in sleeps, the request count is limited, and a page that appears just before the deadline is still accepted")
+def _():
+    body = b"late"; digest = hashlib.sha256(body).hexdigest(); clock, sleep, sleeps = pages_clock(); fetch, asked = scripted([(404, b"")] * 22 + [(200, body), (200, body)])
+    state, detail = da.verify_pages_report("2026-10-27", digest, fetch, sleep, clock); assert state == "verified" and sum(sleeps) < da.PAGES_VERIFY_DEADLINE_SECONDS and len(sleeps) == 22, (state, sum(sleeps), len(sleeps))
+    clock, sleep, sleeps = pages_clock(); fetch, asked = scripted([(404, b"")] * 40)
+    state, detail = da.verify_pages_report("2026-10-27", digest, fetch, sleep, clock); assert state == "unavailable" and sum(sleeps) <= da.PAGES_VERIFY_DEADLINE_SECONDS and len(asked) <= 26, (state, sum(sleeps), len(asked))
+
+@R.register("verify-pages command: it NEVER fails the run - verified, unavailable, a missing or oversized staged file, a bad date and an unexpected error all exit 0, name the result, and write report_link=<state> to the step output")
+def _():
+    folder = new_temp_dir(); staged = os.path.join(folder, "market_intelligence_report.html"); open(staged, "wb").write(b"staged report"); digest = hashlib.sha256(b"staged report").hexdigest()
+    real = da.verify_pages_report
+    def run(args, result=None, boom=False):
+        output = os.path.join(folder, f"out_{len(os.listdir(folder))}.txt")
+        def fake(day, sha, *rest, **more):
+            if boom: raise RuntimeError("unexpected")
+            assert sha == digest; return result
+        da.verify_pages_report = fake
+        try: code, text, err = run_cli(["verify-pages"] + args, env={"GITHUB_OUTPUT": output})
+        finally: da.verify_pages_report = real
+        return code, text, err, (open(output, encoding="utf-8").read() if os.path.exists(output) else None)
+    code, text, err, out = run(["--date", "2026-10-27", "--file", staged], ("verified", "ok")); assert code == 0 and out == "report_link=verified\n" and "VERIFIED" in text and "::warning::" not in text, (code, text, out)
+    code, text, err, out = run(["--date", "2026-10-27", "--file", staged], ("unavailable", "HTTP 404")); assert code == 0 and out == "report_link=unavailable\n" and "::warning::" in text and "artifact link" in text, (code, text, out)
+    code, text, err, out = run(["--date", "2026-10-27", "--file", staged], boom=True); assert code == 0 and out == "report_link=unavailable\n" and "RuntimeError" in text, (code, text, out)
+    for args in (["--date", "2026-10-27", "--file", os.path.join(folder, "missing.html")], ["--date", "not-a-date", "--file", staged], ["--date", "2026-10-27", "--file", folder]):
+        code, text, err, out = run(args, ("verified", "ok")); assert code == 0 and out == "report_link=unavailable\n", (args, code, text, out)
+    big = os.path.join(folder, "big.html"); open(big, "wb").write(b"x" * (da.MAX_INTERACTIVE_REPORT_BYTES + 1)); code, text, err, out = run(["--date", "2026-10-27", "--file", big], ("verified", "ok")); assert code == 0 and out == "report_link=unavailable\n"
+    code, text, err = run_cli(["verify-pages", "--date", "2026-10-27", "--file", staged], env={}); assert code == 0, "without a step output file the command still succeeds"
+
+@R.register("verify-pages HTTP: one real request over a local server - 200 with the same bytes verifies, 404 and a redirect do not; redirects are never followed")
+def _():
+    body = b"served report"; state = {"mode": 200, "paths": []}
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            state["paths"].append(self.path)
+            if state["mode"] == 301: self.send_response(301); self.send_header("Location", "/elsewhere"); self.end_headers(); return
+            self.send_response(state["mode"]); self.send_header("Content-Length", str(len(body) if state["mode"] == 200 else 0)); self.end_headers()
+            if state["mode"] == 200: self.wfile.write(body)
+        def log_message(self, *args): pass
+    httpd = socketserver.TCPServer(("127.0.0.1", 0), Handler); thread = threading.Thread(target=httpd.serve_forever, daemon=True); thread.start()
+    try:
+        base = f"http://127.0.0.1:{httpd.server_address[1]}/x"
+        assert da._http_get(base) == (200, body); state["mode"] = 404; assert da._http_get(base) == (404, b""); state["mode"] = 301; assert da._http_get(base) == (301, b"") and state["paths"][-1] == "/x", state["paths"]
+        assert da._http_get("http://127.0.0.1:1/x") == (None, b"")
+    finally: httpd.shutdown(); httpd.server_close()
 
 R.finish()
