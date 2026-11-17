@@ -306,8 +306,18 @@ def _():
     for stamp in ("2026-10-27 00:00:00 UTC", "2026-10-27 23:59:59 UTC"): ws = workspace(); with_fetched(ws, stamp); good.append((stamp, ws))
     for stamp in ("2026-10-26 23:59:59 UTC", "2026-10-28 00:00:00 UTC", "2026-10-27 25:61:61 UTC"): ws = workspace(); with_fetched(ws, stamp); bad.append((stamp, ws, ["report"], CURRENT))
     for stamp, ws in good:
+        interactive = os.path.join(ws, "interactive_out"); shutil.rmtree(interactive)                     # the interactive report states the recorded fetch time, so it is rebuilt from the edited report (a temporary workspace)
+        assert da.main(["build-interactive-report", "--reports-dir", paths(ws)[0], "--out-dir", interactive, "--date", CURRENT], env={}) == 0, stamp
         code, text = stage(ws); assert code == 0, f"{stamp} must be accepted: {text.strip()[-200:]}"; assert files_in(paths(ws)[2]) == sorted(NAMES(CURRENT))
+        staged = open(os.path.join(paths(ws)[2], f"market_intelligence_report_{CURRENT}.html"), encoding="utf-8").read(); assert "<dt>Data fetched (UTC)</dt><dd>" + stamp[:-4] + " UTC, as recorded by the pipeline" in staged, "the staged report states the recorded fetch time in its provenance"
     each_rejected(bad)
+
+@R.register("the staged interactive report must state the fetch time the pipeline's report records: after the recorded time changes (to another valid time) a report built before the change is refused, and nothing is staged")
+def _():
+    ws = workspace(); with_fetched(ws, "2026-10-27 12:00:00 UTC")
+    reports, dash, out = paths(ws); before = snapshot(reports, dash); code, text = stage(ws)
+    assert code == 1 and "interactive market report" in text and "produces" in text, (code, text.strip()[-200:])
+    assert snapshot(reports, dash) == before and not os.path.exists(out), "nothing was staged or changed"
 
 @R.register("on success the output names the date and the path of every staged file")
 def _():
@@ -474,7 +484,7 @@ def _():
 def _():
     name = f"market_intelligence_report_{CURRENT}.html"; cases = []
     ws = workspace(); os.remove(os.path.join(ws, "interactive_out", name)); cases.append(("missing", ws, [name], CURRENT))
-    ws = workspace(); edit(os.path.join(ws, "interactive_out", name), lambda text: text.replace("Market snapshot", "Market snapshot!", 1)); cases.append(("one changed word", ws, [name, "produces"], CURRENT))
+    ws = workspace(); edit(os.path.join(ws, "interactive_out", name), lambda text: text.replace("Market Intelligence Report", "Market Intelligence Report!", 1)); cases.append(("one changed word", ws, [name, "produces"], CURRENT))
     ws = workspace(); os.rename(os.path.join(ws, "interactive_out", name), os.path.join(ws, "interactive_out", name.replace(CURRENT, "2026-10-25"))); cases.append(("named for another day", ws, [name], CURRENT))
     ws = workspace(); open(os.path.join(ws, "interactive_out", name), "w").close(); cases.append(("empty", ws, [name], CURRENT))
     each_rejected(cases)
