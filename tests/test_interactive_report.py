@@ -4,13 +4,16 @@ The approved v4 report (tests/fixtures/market_intelligence_report_2026-11-12_v4_
 tests/fixtures/report_2026-11-12_data.csv, rebuilt on 2026-11-14 from Kraken's public daily candles with the project's own fetch and CSV code (it is not the original upload; the 31 closes
 of both assets equal the closes embedded in the v4 report, and the 12 November volumes and trade counts equal the v4 text). Nothing here uses the network or a secret.
 """
-import hashlib, json, os, re
+import difflib, hashlib, json, os, re
 from datetime import date, timedelta
 
 from wf_support import Runner, raises, REPO, load
 
 da = load("daily_automation")
 ir = load("interactive_report")
+# This file pins the approved v4 design (the golden fixture). The production default is now the final v6 design (tests/test_interactive_report_v6.py), so these checks call the generator with design v4.
+_render_any_design = ir.render
+ir.render = lambda dataset, provenance=None, design=ir.DESIGN_V4: _render_any_design(dataset, provenance, design)
 dashboard = load("dashboard")
 R = Runner("interactive report checks")
 FIXTURES = os.path.join(REPO, "tests", "fixtures")
@@ -24,6 +27,15 @@ def read(name, binary=False):
 
 V4 = read("market_intelligence_report_2026-11-12_v4_release.html", binary=True)
 GOLDEN = dashboard.parse_dataset(read("report_2026-11-12_data.csv"))
+V4_LINES = V4.decode("utf-8").split("\n")
+
+
+def changed_blocks(out):
+    """The blocks in which a rendered report differs from the approved v4 file, as difflib opcodes (tag, v4 start, v4 end, new start, new end)."""
+    return [op for op in difflib.SequenceMatcher(None, V4_LINES, out.split("\n"), autojunk=False).get_opcodes() if op[0] != "equal"]
+
+
+COMMITTED = {name: os.path.join(REPO, "reports", name) for name in ("report_2026-10-27.md", "report_2026-10-27_data.csv")}
 
 
 def synthetic(closes_btc, closes_eth, volume=lambda i: 100.0 + i, trades=lambda i: 1000 + i, wide=0.02):
@@ -54,11 +66,34 @@ RISING = synthetic([100.0 + 1.0 * i for i in range(31)], [50.0 + 0.9 * i for i i
 MIXED = synthetic([100.0 + 1.0 * i for i in range(31)], [50.0 - 0.4 * i for i in range(31)])
 
 
-@R.register("golden: the approved v4 file is the pinned reference (SHA-256) and the generator reproduces it byte for byte from its 31-day source data")
+@R.register("golden: the approved v4 file is the pinned reference (SHA-256); the generator reproduces it byte for byte EXCEPT in exactly three regions (the UTC-day label, the source note and the added wording-rules paragraph), for a manually supplied CSV")
 def _():
     assert hashlib.sha256(V4).hexdigest() == V4_SHA256
-    out = ir.render(GOLDEN)
-    assert out == V4, next(i for i in range(min(len(out), len(V4))) if out[i] != V4[i])
+    out = ir.render(GOLDEN).decode("utf-8")
+    ops = changed_blocks(out)
+    assert [(tag, i1 + 1, i2) for tag, i1, i2, j1, j2 in ops] == [("replace", 829, 829), ("replace", 1095, 1095), ("insert", 1099, 1098)], ops
+    new_lines = out.split("\n")
+    assert new_lines[828].strip() == "<span>AS OF 12 NOVEMBER 2026 \u00b7 UTC DAY</span>"
+    assert "Supplied CSV representing Kraken spot OHLC daily records for XBT/USD and ETH/USD. The file contains 31 daily observations and 30 aligned return observations." in new_lines[1094]
+    assert new_lines[1098].lstrip().startswith('<p class="notes"><strong>Wording rules:</strong>')
+    assert "This report contains data for 12 November 2026 and is based on the supplied historical CSV. It is not a live market feed." in out     # the approved v4 footer is kept for a supplied CSV
+
+
+@R.register("design unchanged: for a supplied CSV and for an automated Kraken fetch every line outside the wording regions is byte-identical to approved v4 - so the CSS, both scripts, the layout, the charts, KPI cards, tables and controls are untouched")
+def _():
+    prov = {"kind": "kraken_automated", "fetched_at_utc": "2026-11-13 04:00:12"}
+    for label, provenance, allowed in (("supplied", None, {829, 1095, 1099}), ("automated", prov, {829, 831, 832, 1095, 1099, 1112})):
+        out = ir.render(GOLDEN, provenance).decode("utf-8")
+        changed = {i + 1 for tag, i1, i2, j1, j2 in changed_blocks(out) for i in (range(i1, i2) if i2 > i1 else [i1])}
+        assert changed <= allowed, (label, sorted(changed - allowed))
+        for marker_a, marker_b in (("<style>", "</style>"), ('<script>\n(function', "</script>")):          # the stylesheet and the chart script, byte for byte
+            va, vb = V4.decode().index(marker_a), V4.decode().index(marker_b, V4.decode().index(marker_a))
+            oa, ob = out.index(marker_a), out.index(marker_b, out.index(marker_a))
+            assert V4.decode()[va:vb] == out[oa:ob], (label, marker_a)
+        for token in ('class="kpi-grid"', 'class="chart-grid"', 'data-win="7"', 'data-ser="BTC"', 'class="plot-wrap"', 'class="dashboard-action"', "@media(max-width: 760px)", "@media(max-width: 480px)"):
+            assert out.count(token) == V4.decode().count(token), (label, token)
+    template = open(ir.TEMPLATE_PATH, encoding="utf-8", newline="").read()
+    assert "<script>" in template and template.count("{{") == len(re.findall(r"\{\{[a-z0-9_]+\}\}", template))
 
 
 @R.register("golden: the output is deterministic - the same dataset gives the same bytes on every call, and no clock, random value or environment is read")
@@ -67,16 +102,9 @@ def _():
     import ast
     tree = ast.parse(open(os.path.join(REPO, "src", "interactive_report.py"), encoding="utf-8").read())
     imported = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names} | {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
-    assert imported <= {"html", "json", "math", "re", "statistics", "pathlib", "analysis", "dashboard"}, imported        # no clock, random, environment or network module
-
-
-@R.register("design unchanged: with every slot replaced by its golden value the template equals v4, so no byte outside the data slots was edited (CSS, JavaScript, layout, fixed wording)")
-def _():
-    template = open(ir.TEMPLATE_PATH, encoding="utf-8", newline="").read()
-    values = ir.slot_values(GOLDEN)
-    assert set(re.findall(r"\{\{([a-z0-9_]+)\}\}", template)) <= set(values)
-    assert ir.render_template(template, values).encode("utf-8") == V4
-    assert "<script>" in template and template.count("{{") == len(re.findall(r"\{\{[a-z0-9_]+\}\}", template))
+    assert imported <= {"hashlib", "html", "json", "math", "re", "statistics", "pathlib", "analysis", "dashboard", "datetime"}, imported        # no random, environment or network module
+    clock_calls = [node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute) and node.attr in ("now", "utcnow", "today", "time", "monotonic", "perf_counter", "environ", "getenv")]
+    assert not clock_calls, clock_calls          # datetime is imported only to check that a RECORDED fetch time is a real date; the clock is never read
 
 
 @R.register("metrics: every figure of the approved report is reproduced from the CSV with the documented definitions (returns, RSI, ATR, volatility, turnover, ratios, VWAP, close location, drawdown, correlation)")
@@ -186,20 +214,80 @@ def _():
     assert ir.usd(None) == "n/a" and ir.ratio_x(None) == "n/a" and ir.pct(None) == "n/a"
 
 
-@R.register("the command line: build-interactive-report writes exactly market_intelligence_report_<date>.html (the golden bytes) in a NEW folder, and refuses a wrong date, a missing CSV and an existing folder")
+@R.register("the command line: build-interactive-report writes exactly market_intelligence_report_<date>.html in a NEW folder, stating the fetch time that the pipeline's own report recorded; it refuses a wrong date, a missing CSV, a missing report, a report that says another fetch day and an existing folder")
 def _():
-    import tempfile
+    import shutil, tempfile
     reports, out_root = tempfile.mkdtemp(prefix="ir_"), tempfile.mkdtemp(prefix="ir_")
-    with open(os.path.join(reports, "report_2026-11-12_data.csv"), "wb") as handle:
-        handle.write(read("report_2026-11-12_data.csv", binary=True))
-    out = os.path.join(out_root, "interactive_out")
-    assert da.main(["build-interactive-report", "--reports-dir", reports, "--out-dir", out, "--date", "2026-11-12"], env={}) == 0
-    assert os.listdir(out) == ["market_intelligence_report_2026-11-12.html"] and open(os.path.join(out, os.listdir(out)[0]), "rb").read() == V4
-    assert da.main(["build-interactive-report", "--reports-dir", reports, "--out-dir", out, "--date", "2026-11-12"], env={}) == 1           # the folder exists and is not empty
-    assert da.main(["build-interactive-report", "--reports-dir", reports, "--out-dir", os.path.join(out_root, "b"), "--date", "2026-11-11"], env={}) == 1      # the CSV ends on 2026-11-12
-    assert da.main(["build-interactive-report", "--reports-dir", reports, "--out-dir", os.path.join(out_root, "c"), "--date", "2026-11-13"], env={}) == 1
-    assert da.main(["build-interactive-report", "--reports-dir", out_root, "--out-dir", os.path.join(out_root, "d"), "--date", "2026-11-12"], env={}) == 1       # no CSV there
-    assert not os.path.exists(os.path.join(out_root, "b")) and not os.path.exists(os.path.join(out_root, "d"))
+    for name, source in COMMITTED.items(): shutil.copy(source, os.path.join(reports, name))
+    out = os.path.join(out_root, "interactive_out"); name = "market_intelligence_report_2026-10-27.html"
+    assert da.main(["build-interactive-report", "--reports-dir", reports, "--out-dir", out, "--date", "2026-10-27"], env={}) == 0
+    built = open(os.path.join(out, name), "rb").read(); assert os.listdir(out) == [name]
+    dataset = dashboard.parse_dataset(open(COMMITTED["report_2026-10-27_data.csv"], encoding="utf-8", newline="").read())
+    assert built == ir.render(dataset, {"kind": "kraken_automated", "fetched_at_utc": "2026-10-28 06:56:33"}), "the stated fetch time must be the one in the pipeline's report"
+    page = built.decode("utf-8"); assert "DATA FETCHED 2026-10-28 06:56:33 UTC" in page and "fetched automatically by the daily workflow on 2026-10-28 06:56:33 UTC" in page and "supplied" not in text_of(page).lower().split("source:")[1][:400]
+    assert da.main(["build-interactive-report", "--reports-dir", reports, "--out-dir", out, "--date", "2026-10-27"], env={}) == 1                 # the folder exists and is not empty
+    assert da.main(["build-interactive-report", "--reports-dir", reports, "--out-dir", os.path.join(out_root, "b"), "--date", "2026-10-26"], env={}) == 1      # the CSV ends on 2026-10-27
+    assert da.main(["build-interactive-report", "--reports-dir", out_root, "--out-dir", os.path.join(out_root, "d"), "--date", "2026-10-27"], env={}) == 1       # no CSV there
+    os.remove(os.path.join(reports, "report_2026-10-27.md"))
+    assert da.main(["build-interactive-report", "--reports-dir", reports, "--out-dir", os.path.join(out_root, "e"), "--date", "2026-10-27"], env={}) == 1       # no report: no fetch time, so nothing is built
+    shutil.copy(COMMITTED["report_2026-10-27.md"], os.path.join(reports, "report_2026-10-27.md"))
+    md = open(os.path.join(reports, "report_2026-10-27.md"), encoding="utf-8", newline="").read()
+    open(os.path.join(reports, "report_2026-10-27.md"), "w", encoding="utf-8", newline="").write(md.replace("2026-10-28 06:56:33 UTC", "2026-10-30 06:56:33 UTC"))
+    assert da.main(["build-interactive-report", "--reports-dir", reports, "--out-dir", os.path.join(out_root, "f"), "--date", "2026-10-27"], env={}) == 1       # fetched two days after the analysis date: refused
+    assert not any(os.path.exists(os.path.join(out_root, x)) for x in "bdef"), "a refused build leaves no folder"
+
+
+@R.register("provenance: an automated fetch states Kraken, the recorded UTC fetch time (hero line, source note and footer) and the UTC day basis, and never says 'supplied' or 'not a live market feed'; a supplied CSV keeps the approved v4 wording, names no fetch time and never implies live data")
+def _():
+    fetched = "2026-11-13 04:00:12"
+    auto = ir.render(GOLDEN, {"kind": "kraken_automated", "fetched_at_utc": fetched}).decode("utf-8"); sup = ir.render(GOLDEN).decode("utf-8")
+    assert auto.count(fetched) == 3 and "DATA FETCHED " + fetched + " UTC" in auto and "fetched automatically by the daily workflow on " + fetched + " UTC" in auto and "fetched automatically from Kraken on " + fetched + " UTC" in auto
+    assert "UTC DAY" in auto and "All dates and day boundaries are UTC" in auto and "a completed UTC day" in auto and "is not a real-time market feed" in auto
+    assert "Supplied CSV" not in auto and "supplied historical CSV" not in auto and "not a live market feed" not in auto
+    assert "Supplied CSV representing Kraken spot OHLC daily records" in sup and "based on the supplied historical CSV. It is not a live market feed." in sup and "records no fetch time" in sup
+    assert "DATA FETCHED" not in sup and "fetched" not in text_of(sup).lower().replace("records no fetch time", "") and "fetched automatically" not in sup
+    assert ir.render(GOLDEN, None) == ir.render(GOLDEN), "no provenance means a supplied CSV, never an automated fetch"
+
+
+@R.register("provenance is never invented: a supplied CSV may not carry a fetch time, an automated fetch must carry a real UTC one in the exact format, unknown kinds and extra keys are refused, and a hostile slot value is refused")
+def _():
+    bad = [{"kind": "supplied_csv", "fetched_at_utc": "2026-11-13 04:00:12"}, {"kind": "kraken_automated", "fetched_at_utc": None}, {"kind": "kraken_automated", "fetched_at_utc": ""},
+           {"kind": "kraken_automated", "fetched_at_utc": "2026-11-13T04:00:12"}, {"kind": "kraken_automated", "fetched_at_utc": "2026-11-13 04:00"}, {"kind": "kraken_automated", "fetched_at_utc": "2026-13-45 04:00:12"},
+           {"kind": "kraken_automated", "fetched_at_utc": "2026-11-13 25:00:00"}, {"kind": "kraken_automated", "fetched_at_utc": "2026-11-13 04:00:12 UTC"}, {"kind": "kraken_automated", "fetched_at_utc": 20261113},
+           {"kind": "kraken_automated", "fetched_at_utc": "<script>x</script>"}, {"kind": "live", "fetched_at_utc": None}, {"kind": "kraken_automated"}, {"kind": "supplied_csv", "fetched_at_utc": None, "extra": 1}, "kraken", 5]
+    for item in bad: raises(ir.InteractiveReportError, lambda item=item: ir.render(GOLDEN, item))
+    template = open(ir.TEMPLATE_PATH, encoding="utf-8", newline="").read(); values = ir.slot_values(GOLDEN)
+    raises(ir.InteractiveReportError, lambda: ir.render_template(template, dict(values, fetched_span="\n    <span>DATA FETCHED 2026-11-13 04:00:12 UTC</span><script>x()</script>")), "unexpected content")
+    page = ir.render_template(template, dict(values, source_note="<img src=x onerror=alert(1)>"))
+    assert "&lt;img src=x onerror=alert(1)&gt;" in page and "<img src=x" not in page
+
+
+@R.register("threshold transparency: the report's wording-rules paragraph is written from the constants the sentences are chosen with, and states 5 %, 1.25x, the lowest or highest 25 %, 0.05 %, RSI 35 and 65 and the correlation limits 0.70 and 0.30")
+def _():
+    assert (ir.MATERIAL_MOVE, ir.HIGHLIGHT_RATIO, ir.NEAR_EDGE_PERCENT, ir.VWAP_NEAR, ir.RSI_LOW, ir.RSI_HIGH) == (0.05, 1.25, 25.0, 0.0005, 35.0, 65.0), "a threshold changed: the disclosure and the tests must be reviewed together"
+    assert (ir.analysis.CORRELATION_STRONG_FROM, ir.analysis.CORRELATION_WEAK_BELOW) == (0.70, 0.30)
+    note = ir.threshold_note()
+    for fragment in ("at least 5% in size", "from 1.25 times the average of the previous seven sessions", "lowest or highest 25% of the day's range", "less than 0.05% away", "at 35 or below, or 65 or above",
+                     "strong from a correlation of 0.70 and moderate from 0.30", "presentation conventions, not market standards or signals"):
+        assert fragment in note, fragment
+    for page in (ir.render(GOLDEN).decode(), ir.render(GOLDEN, {"kind": "kraken_automated", "fetched_at_utc": "2026-11-13 04:00:12"}).decode()):
+        assert "<strong>Wording rules:</strong> " + note in page, "the paragraph is in the methodology section of every report"
+        assert page.index("<strong>Wording rules:</strong>") > page.index("<strong>Activity:</strong>") and page.index("<strong>Wording rules:</strong>") < page.index("<strong>Important limitations:</strong>")
+
+
+@R.register("threshold boundaries behave exactly as disclosed: 5 % and 1.25x and the 25 % edge and RSI 35/65 are inclusive, 0.05 % from VWAP is not 'approximately at', and just inside or outside each limit changes the wording")
+def _():
+    m = ir.compute(GOLDEN)
+    both = lambda r: ir._text_both_below({a: dict(m[a], r30=r) for a in ("BTC", "ETH")})
+    assert "materially below" in both(-0.05) and "materially" not in both(-0.0499) and "materially above" in both(0.05) and "materially" not in both(0.0499)
+    mixed = ir._text_both_below({"BTC": dict(m["BTC"], r30=-0.06), "ETH": dict(m["ETH"], r30=-0.04)}); assert "materially" not in mixed, "both assets must reach the limit"
+    assert ir._ratio_cls(1.25) == " positive" and ir._ratio_cls(1.2499) == "" and ir._callout({**m, "BTC": dict(m["BTC"], volratio=1.2499), "ETH": dict(m["ETH"], daily=-0.001)}).find("elevated") == -1
+    assert "elevated BTC spot volume" in ir._callout({**m, "BTC": dict(m["BTC"], volratio=1.25)})
+    assert ir._location({"loc": 25.0}) == "near its daily low" and ir._location({"loc": 25.01}) == "in the middle of its daily range" and ir._location({"loc": 75.0}) == "near its daily high" and ir._location({"loc": 74.99}) == "in the middle of its daily range"
+    assert ir._vwap_state({"vwaprel": 0.000499}) == "near" and ir._vwap_state({"vwaprel": 0.0005}) == "above" and ir._vwap_state({"vwaprel": -0.0005}) == "below" and ir._vwap_state({"vwaprel": -0.000499}) == "near"
+    risk = lambda a, b: ir._risk({**m, "BTC": dict(m["BTC"], rsi=a), "ETH": dict(m["ETH"], rsi=b)})
+    assert "lower end of the scale" in risk(35.0, 34.0) and "lower end" not in risk(35.01, 30.0) and "upper end of the scale" in risk(65.0, 70.0) and "upper end" not in risk(64.99, 70.0)
+    assert "The RSI readings are 50.0 for BTC and 50.0 for ETH" in risk(50.0, 50.0)
 
 
 R.finish()

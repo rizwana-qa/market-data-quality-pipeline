@@ -826,9 +826,9 @@ svg.plot:focus-visible { outline: 2px solid #34738F; outline-offset: 3px; border
   <h1>Bitcoin &amp; Ethereum<br>Market Intelligence Brief</h1>
   <p>Executive view of price performance, momentum, volatility, trading participation and relative market strength.</p>
   <div class="hero-meta">
-    <span>AS OF {{as_of_upper}}</span>
+    <span>AS OF {{as_of_upper}} · UTC DAY</span>
     <span>31 DAILY OHLC OBSERVATIONS · 30 RETURN INTERVALS</span>
-    <span>KRAKEN SPOT · USD PAIRS</span>
+    <span>KRAKEN SPOT · USD PAIRS</span>{{fetched_span}}
   </div>
 </header>
 
@@ -1092,10 +1092,11 @@ svg.plot:focus-visible { outline: 2px solid #34738F; outline-offset: 3px; border
   <div class="kicker">08 · Data governance</div>
   <h2>Scope, methodology and limitations</h2>
 
-  <p class="notes"><strong>Source:</strong> Supplied CSV representing Kraken spot OHLC daily records for XBT/USD and ETH/USD. The file contains 31 daily observations and 30 aligned return observations.</p>
+  <p class="notes"><strong>Source:</strong> {{source_note}}</p>
   <p class="notes"><strong>Return windows:</strong> Close-to-close returns. Seven-return performance compares the latest close with the close seven intervals earlier. Fifteen- and thirty-return windows follow the same convention.</p>
   <p class="notes"><strong>RSI:</strong> 14-period simple average gains and losses. ATR: 14-period average true range. Realised volatility: sample standard deviation of daily returns annualised using √365. Alternative RSI smoothing conventions can produce slightly different readings.</p>
   <p class="notes"><strong>Activity:</strong> Latest-session volume, estimated USD turnover and trade count are compared with the previous seven sessions. Estimated turnover uses base volume multiplied by reported VWAP. Average trade notional divides estimated turnover by recorded trade count.</p>
+  <p class="notes"><strong>Wording rules:</strong> {{threshold_note}}</p>
   <p class="notes"><strong>Important limitations:</strong> This is an exchange-specific spot dataset, not consolidated global market data. OHLCV and trade count do not provide bid-ask spread, order-book depth, aggressor-side volume, derivatives open interest, funding rates, liquidations, ETF flows, on-chain flows, macroeconomic context or sentiment.</p>
   <p class="notes"><strong>Analysis approach:</strong> The intelligence findings are evidence-based interpretations of calculated historical metrics. No predictive AI model or external AI signal has been run. These indicators are decision-support context, not investment advice.</p>
 </section>
@@ -1109,7 +1110,7 @@ svg.plot:focus-visible { outline: 2px solid #34738F; outline-offset: 3px; border
 <footer class="footer">
   <div>
     <strong>Executive market-monitoring report</strong><br>
-    This report contains data for {{as_of_long}} and is based on the supplied historical CSV. It is not a live market feed.
+    {{footer_note}}
   </div>
   <div class="footer-credit">Created by Rizwana Zahoor</div>
 </footer>

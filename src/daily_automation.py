@@ -114,8 +114,8 @@ PAGES_REPORT_URL = "https://rizwana-qa.github.io/market-data-quality-pipeline/re
 PAGES_VERIFY_DEADLINE_SECONDS = 240                               # how long the published report is waited for (the first Pages build is usually online after about 30 s)
 PAGES_VERIFY_INTERVAL_SECONDS = 10
 PAGES_REQUEST_TIMEOUT = 15
-MAX_PAGES_REPORT_BYTES = 4 * 1024 * 1024
-MAX_INTERACTIVE_REPORT_BYTES = 2 * 1024 * 1024                    # the approved report is about 58 KB
+MAX_PAGES_REPORT_BYTES = 16 * 1024 * 1024                          # the report embeds Plotly.js (about 4.9 MB), like the dashboard
+MAX_INTERACTIVE_REPORT_BYTES = 16 * 1024 * 1024                   # the final report embeds Plotly.js (about 4.9 MB); the earlier v4 report was about 58 KB
 REPORT_PARTS = {"meta", "assets", "pair", "coverage", "charts"}
 REPORT_OPTIONAL_PARTS = {"comparison", "validation", "ohlc"}               # sent by this client; an older client sends neither, and the web app accepts both shapes
 REPORT_CHART_IDS = ["indexed", "returns", "drawdown"]
@@ -1226,10 +1226,27 @@ def read_dataset(reports_dir, day):
     return dataset, csv_bytes
 
 
-def render_interactive_report(dataset):
+def fetch_provenance(report_bytes, report_name, dataset, day):
+    """The data provenance stated in the interactive report: Kraken, fetched automatically, at the fetch time the pipeline itself wrote into its report ('Data fetched', UTC). The report is checked against its CSV
+    first, and the time must be a real UTC date and time on the day after the analysis date (the same rule as the staging check). Nothing is invented: if the time cannot be established the build is refused."""
+    dashboard = _dashboard()
+    try:
+        facts = dashboard.check_against_report(dataset, _text_of(report_bytes, report_name))
+    except dashboard.DashboardInputError as error:
+        raise AutomationError(f"the report {report_name} does not match its CSV: {safe_text(error)}")
+    try:
+        fetched = datetime.strptime(facts["data_fetched"], FETCHED_TIME_FORMAT)
+    except ValueError:
+        raise AutomationError(f"the report {report_name} has a 'Data fetched' time that is not a real UTC date and time")
+    if fetched.date() != day + timedelta(days=1):
+        raise AutomationError(f"the report {report_name} says the data was fetched on {fetched.date().isoformat()}, which is not the day after the analysis date {day.isoformat()}")
+    return {"kind": _interactive().SOURCE_KRAKEN, "fetched_at_utc": fetched.strftime("%Y-%m-%d %H:%M:%S")}          # the report writes the time with a trailing " UTC"; the report states the UTC basis itself
+
+
+def render_interactive_report(dataset, provenance=None):
     module = _interactive()
     try:
-        return module.render(dataset)
+        return module.render(dataset, provenance)
     except (module.InteractiveReportError, ValueError, ArithmeticError) as error:
         raise AutomationError(f"the interactive market report could not be built from the CSV: {safe_text(error)}")
 
@@ -1240,7 +1257,9 @@ def command_build_interactive_report(args, env, today):
     _check_output_folder(Path(args.out_dir))
     dataset, _ = read_dataset(args.reports_dir, day)
     name = DELIVERABLE_NAMES[3].format(day=day.isoformat())
-    data = render_interactive_report(dataset)
+    report_name = DELIVERABLE_NAMES[0].format(day=day.isoformat())
+    provenance = fetch_provenance(_read_source(args.reports_dir, report_name, _dashboard().MAX_REPORT_BYTES), report_name, dataset, day)
+    data = render_interactive_report(dataset, provenance)
     stage_files({name: data}, args.out_dir)
     print(f"build-interactive-report: OK, {name} ({len(data)} bytes, sha256 {hashlib.sha256(data).hexdigest()}) for {day.isoformat()} written to {args.out_dir}")
     return 0
@@ -1288,7 +1307,7 @@ def validate_deliverables(reports_dir, dashboard_dir, day, interactive_dir):
         problems.append("its embedded data differs from the CSV")
     if problems:
         raise AutomationError(f"the dashboard {page_name} does not match the CSV and the report of {iso}: " + "; ".join(problems))
-    if interactive_bytes != render_interactive_report(dataset):                  # the generator is deterministic: the staged report must be exactly what this CSV produces
+    if interactive_bytes != render_interactive_report(dataset, {"kind": _interactive().SOURCE_KRAKEN, "fetched_at_utc": fetched.strftime("%Y-%m-%d %H:%M:%S")}):      # deterministic: exactly what this CSV and this recorded fetch time produce
         raise AutomationError(f"the interactive market report {interactive_name} is not the report that the CSV {csv_name} produces")
     return {report_name: report_bytes, csv_name: csv_bytes, page_name: page_bytes, interactive_name: interactive_bytes}
 
