@@ -9,6 +9,7 @@ R = Runner("file replacement checks")
 check = R.register
 cleanup = []
 REPORT, CSV = "report_2026-03-19.md", "report_2026-03-19_data.csv"
+MANIFEST = "report_2026-03-19_manifest.json"          # the third file of a run; it has no old copy in these tests and is replaced last
 OLD = {REPORT: "OLD REPORT ✓\n", CSV: "old,csv\n"}
 real_replace, real_unlink = os.replace, pathlib.Path.unlink
 LAST = {"replace_calls": 0}   # number of os.replace calls made by the most recent run()
@@ -56,16 +57,16 @@ def _():
     d = folder(); run(d, fail_unlink_of={REPORT + ".bak"}); assert read(d, REPORT + ".bak") == OLD[REPORT]
 @check("cleanup fails for the FIRST backup only: the second backup is still deleted (cleanup continues), no .tmp left")
 def _():
-    d = folder(); run(d, fail_unlink_of={REPORT + ".bak"}); assert files_in(d) == sorted([REPORT, REPORT + ".bak", CSV]), files_in(d)
+    d = folder(); run(d, fail_unlink_of={REPORT + ".bak"}); assert files_in(d) == sorted([REPORT, REPORT + ".bak", CSV, MANIFEST]), files_in(d)
 @check("cleanup fails for the SECOND backup only: exit 0, both new files in place, the warning names the CSV backup")
 def _():
     d = folder(); code, out, err = run(d, fail_unlink_of={CSV + ".bak"})
-    assert code == 0 and is_new(d, REPORT) and is_new(d, CSV) and CSV + ".bak" in err and REPORT + ".bak" not in err and files_in(d) == sorted([REPORT, CSV, CSV + ".bak"]), (code, err[:200], files_in(d))
+    assert code == 0 and is_new(d, REPORT) and is_new(d, CSV) and CSV + ".bak" in err and REPORT + ".bak" not in err and files_in(d) == sorted([REPORT, CSV, CSV + ".bak", MANIFEST]), (code, err[:200], files_in(d))
 @check("cleanup fails for BOTH backups: exit 0, both new files in place, one warning per leftover, old bytes kept")
 def _():
     d = folder(); code, out, err = run(d, fail_unlink_of={REPORT + ".bak", CSV + ".bak"})
     assert code == 0 and is_new(d, REPORT) and is_new(d, CSV) and err.count("WARNING") == 2 and read(d, REPORT + ".bak") == OLD[REPORT] and read(d, CSV + ".bak") == OLD[CSV], (code, err[:300], files_in(d))
-@check("cleanup fails: the new files were NOT rolled back (no replace call after the second new file was placed)")
+@check("cleanup fails: the new files were NOT rolled back (no replace call after the last new file, the manifest, was placed)")
 def _():
     d = folder(); bodies, *_ = synthetic_bodies(); calls = []
     def spy(source, destination): calls.append((os.path.basename(source), os.path.basename(destination))); return real_replace(source, destination)
@@ -73,24 +74,24 @@ def _():
         if self.name.endswith(".bak") and self.exists(): raise PermissionError("locked")
         return real_unlink(self, missing_ok=missing_ok)
     with mock.patch("os.replace", side_effect=spy), mock.patch.object(pathlib.Path, "unlink", flaky_unlink): code = run_main(bodies, NOW, d)[0]
-    assert code == 0 and len(calls) == 4 and calls[-1] == (CSV + ".tmp", CSV), calls
-@check("cleanup fails once, the next normal run still works: exit 0, stale .bak overwritten and removed, only the two files remain")
+    assert code == 0 and len(calls) == 5 and calls[-2] == (CSV + ".tmp", CSV) and calls[-1] == (MANIFEST + ".tmp", MANIFEST), calls
+@check("cleanup fails once, the next normal run still works: exit 0, stale .bak overwritten and removed, only the three files remain")
 def _():
     d = folder(); run(d, fail_unlink_of={REPORT + ".bak"}); code, out, err = run(d)
-    assert code == 0 and files_in(d) == sorted([REPORT, CSV]) and is_new(d, REPORT) and is_new(d, CSV), (code, err[:200], files_in(d))
-@check("normal success with old files present: exit 0, no warning, only the two files remain")
+    assert code == 0 and files_in(d) == sorted([REPORT, CSV, MANIFEST]) and is_new(d, REPORT) and is_new(d, CSV), (code, err[:200], files_in(d))
+@check("normal success with old files present: exit 0, no warning, only the three files remain")
 def _():
-    d = folder(); code, out, err = run(d); assert code == 0 and "WARNING" not in err and files_in(d) == sorted([REPORT, CSV]) and is_new(d, REPORT) and is_new(d, CSV)
+    d = folder(); code, out, err = run(d); assert code == 0 and "WARNING" not in err and files_in(d) == sorted([REPORT, CSV, MANIFEST]) and is_new(d, REPORT) and is_new(d, CSV)
 @check("normal success on an empty folder: exit 0, no warning, nothing to clean up")
 def _():
-    d = folder(existing=()); code, out, err = run(d); assert code == 0 and "WARNING" not in err and files_in(d) == sorted([REPORT, CSV])
+    d = folder(existing=()); code, out, err = run(d); assert code == 0 and "WARNING" not in err and files_in(d) == sorted([REPORT, CSV, MANIFEST])
 
 # ---------------------------------------------------------------- failure while replacing either output -> everything is put back
 CASES = (  # (old files that exist, replace call that fails, what that call does)
-    ((REPORT, CSV), 1, "old report -> .bak"), ((REPORT, CSV), 2, "new report in place"), ((REPORT, CSV), 3, "old CSV -> .bak"), ((REPORT, CSV), 4, "new CSV in place"),
-    ((REPORT,), 1, "old report -> .bak"), ((REPORT,), 2, "new report in place"), ((REPORT,), 3, "new CSV in place (no old CSV)"),
-    ((CSV,), 1, "new report in place (no old report)"), ((CSV,), 2, "old CSV -> .bak"), ((CSV,), 3, "new CSV in place"),
-    ((), 1, "new report in place (no old files)"), ((), 2, "new CSV in place (no old files)"),
+    ((REPORT, CSV), 1, "old report -> .bak"), ((REPORT, CSV), 2, "new report in place"), ((REPORT, CSV), 3, "old CSV -> .bak"), ((REPORT, CSV), 4, "new CSV in place"), ((REPORT, CSV), 5, "new manifest in place (last)"),
+    ((REPORT,), 1, "old report -> .bak"), ((REPORT,), 2, "new report in place"), ((REPORT,), 3, "new CSV in place (no old CSV)"), ((REPORT,), 4, "new manifest in place (no old manifest)"),
+    ((CSV,), 1, "new report in place (no old report)"), ((CSV,), 2, "old CSV -> .bak"), ((CSV,), 3, "new CSV in place"), ((CSV,), 4, "new manifest in place (no old manifest)"),
+    ((), 1, "new report in place (no old files)"), ((), 2, "new CSV in place (no old files)"), ((), 3, "new manifest in place (no old files)"),
 )
 for existing, failing_call, what in CASES:
     @check(f"replace fails: old files {[n[-8:] for n in existing] or 'none'}, call {failing_call} ({what}) -> exit 1, ERROR, old state exactly restored, no .tmp/.bak")
@@ -100,7 +101,8 @@ for existing, failing_call, what in CASES:
 
 # ---------------------------------------------------------------- the restore itself fails: what is still guaranteed
 for fail_set, what in (({4, 5}, "new CSV cannot be placed, then the CSV restore fails"), ({4, 6}, "new CSV cannot be placed, then the report restore fails"),
-                       ({4, 5, 6}, "new CSV cannot be placed, then BOTH restores fail"), ({2, 3}, "new report cannot be placed, then its restore fails")):
+                       ({4, 5, 6}, "new CSV cannot be placed, then BOTH restores fail"), ({2, 3}, "new report cannot be placed, then its restore fails"),
+                       ({5, 6}, "the manifest cannot be placed, then the CSV restore fails")):
     @check(f"restore fails ({what}): exit 1 with an ERROR (no crash), no .tmp left, and every old file's bytes still exist on disk")
     def _(fail_set=fail_set):
         d = folder(); code, out, err = run(d, fail_replace_calls=fail_set)

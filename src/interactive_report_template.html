@@ -1,0 +1,1353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light">
+<title>Digital Asset Market Intelligence | BTC &amp; ETH</title>
+
+<style>
+:root {
+  --page: #FFFFFF;
+  --text: #263747;
+  --secondary: #586A79;
+  --muted: #788795;
+  --border: #DCE3E9;
+  --soft: #F5F7F9;
+  --navy: #102B43;
+  --navy2: #174563;
+  --btc: #F2A84A;
+  --eth: #68AAFF;
+  --green: #27845E;
+  --red: #C94F5B;
+  --grid: #E2E8ED;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 24px 12px;
+  background: #FFFFFF;
+  color: var(--text);
+  font: 13px/1.5 Arial, Helvetica, sans-serif;
+}
+
+.report {
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  animation: reportIn .45s ease both;
+}
+
+@keyframes reportIn {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.subject {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+/* FILLED TOP BANNER */
+
+.hero {
+  position: relative;
+  overflow: hidden;
+  padding: 34px 38px 25px;
+  border: 1px solid #173E5B;
+  border-radius: 12px 12px 0 0;
+  background:
+    radial-gradient(circle at 90% 8%, rgba(100,174,220,.22), transparent 28%),
+    linear-gradient(120deg, #102B43 0%, #174563 65%, #205675 100%);
+  color: #FFFFFF;
+  box-shadow: 0 8px 22px rgba(16,43,67,.13);
+}
+
+.hero:after {
+  content: "";
+  position: absolute;
+  width: 270px;
+  height: 270px;
+  right: -100px;
+  top: -175px;
+  border: 1px solid rgba(255,255,255,.15);
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 30px rgba(255,255,255,.025),
+    0 0 0 65px rgba(255,255,255,.018);
+  pointer-events: none;
+}
+
+.eyebrow {
+  position: relative;
+  z-index: 1;
+  color: #A9D0E5;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+}
+
+.hero h1 {
+  position: relative;
+  z-index: 1;
+  max-width: 720px;
+  margin: 12px 0 9px;
+  color: #FFFFFF;
+  font-size: clamp(27px, 4vw, 36px);
+  line-height: 1.14;
+  letter-spacing: -.65px;
+}
+
+.hero p {
+  position: relative;
+  z-index: 1;
+  max-width: 750px;
+  margin: 0;
+  color: #D6E4EF;
+  font-size: 12px;
+}
+
+.hero-meta {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px 23px;
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255,255,255,.19);
+  color: #D0E0EC;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .55px;
+}
+
+/* WHITE EMAIL BODY */
+
+.content {
+  padding: 28px 30px;
+  border: 1px solid var(--border);
+  border-top: 0;
+  background: #FFFFFF;
+}
+
+.section {
+  margin: 0 0 30px;
+  animation: sectionIn .4s ease both;
+}
+
+.section:nth-child(2) { animation-delay: .04s; }
+.section:nth-child(3) { animation-delay: .08s; }
+.section:nth-child(4) { animation-delay: .12s; }
+.section:nth-child(5) { animation-delay: .16s; }
+.section:nth-child(6) { animation-delay: .20s; }
+.section:nth-child(7) { animation-delay: .24s; }
+.section:nth-child(8) { animation-delay: .28s; }
+
+@keyframes sectionIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.kicker {
+  margin-bottom: 4px;
+  color: #698195;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1.35px;
+  text-transform: uppercase;
+}
+
+h2 {
+  margin: 0 0 6px;
+  color: #253B4D;
+  font-size: 17px;
+  letter-spacing: -.2px;
+}
+
+.intro {
+  max-width: 850px;
+  margin: 0 0 15px;
+  color: #71808D;
+  font-size: 10.5px;
+}
+
+.positive { color: var(--green) !important; }
+.negative { color: var(--red) !important; }
+.btc-text { color: #B97824; }
+.eth-text { color: #287F9A; }
+
+/* ORIGINAL KPI CARD VISUAL STYLE */
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0,1fr));
+  gap: 11px;
+  margin: 17px 0 19px;
+}
+
+.kpi {
+  position: relative;
+  overflow: hidden;
+  min-height: 116px;
+  padding: 15px 15px 13px;
+  border: 1px solid rgba(173,205,232,.34);
+  border-radius: 11px;
+  background: linear-gradient(145deg, #193B59 0%, #102B43 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.08),
+    0 7px 17px rgba(16,43,67,.12);
+  animation: kpiIn .45s ease both;
+  transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease;
+}
+
+.kpi:nth-child(1) { animation-delay: .04s; }
+.kpi:nth-child(2) { animation-delay: .08s; }
+.kpi:nth-child(3) { animation-delay: .12s; }
+.kpi:nth-child(4) { animation-delay: .16s; }
+.kpi:nth-child(5) { animation-delay: .20s; }
+.kpi:nth-child(6) { animation-delay: .24s; }
+.kpi:nth-child(7) { animation-delay: .28s; }
+.kpi:nth-child(8) { animation-delay: .32s; }
+
+@keyframes kpiIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.kpi:before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--accent, #59C5D8);
+}
+
+.kpi:after {
+  content: "";
+  position: absolute;
+  width: 110px;
+  height: 110px;
+  right: -65px;
+  top: -65px;
+  border-radius: 50%;
+  background: var(--glow, rgba(89,197,216,.08));
+  filter: blur(3px);
+}
+
+.kpi.btc { --accent: #F2A84A; --glow: rgba(242,168,74,.15); }
+.kpi.eth { --accent: #68AAFF; --glow: rgba(104,170,255,.15); }
+.kpi.risk { --accent: #F07883; --glow: rgba(240,120,131,.13); }
+.kpi.blue { --accent: #59C5D8; --glow: rgba(89,197,216,.12); }
+
+.kpi:hover {
+  transform: translateY(-3px);
+  border-color: rgba(173,205,232,.55);
+  box-shadow: 0 12px 24px rgba(16,43,67,.19);
+}
+
+.k-label {
+  position: relative;
+  z-index: 1;
+  color: #B8CADA;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .65px;
+  text-transform: uppercase;
+}
+
+.k-value {
+  position: relative;
+  z-index: 1;
+  margin: 9px 0 4px;
+  color: #F2F7FB;
+  font-size: clamp(18px, 2vw, 24px);
+  font-weight: 750;
+  letter-spacing: -.5px;
+  white-space: nowrap;
+}
+
+.k-context {
+  position: relative;
+  z-index: 1;
+  color: #B2C3D2;
+  font-size: 10px;
+}
+
+/* EXECUTIVE INTERPRETATION */
+
+.callout, .insight {
+  margin: 13px 0 17px;
+  padding: 13px 16px;
+  border: 1px solid #DCE5EB;
+  border-left: 3px solid #34738F;
+  border-radius: 7px;
+  background: #F3F7F9;
+  color: #526574;
+  font-size: 10.5px;
+}
+
+.callout-title {
+  color: #376B86;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.callout p { margin: 5px 0 0; }
+.insight strong, .callout strong { color: #304D62; }
+
+/* MARKET INTELLIGENCE - CLEAN EDITORIAL LAYOUT */
+
+.findings {
+  margin: 13px 0 15px;
+  border-top: 1px solid #DCE4EA;
+}
+
+.finding {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 10px;
+  padding: 12px 8px;
+  border-bottom: 1px solid #E6EBEF;
+  background: #FFFFFF;
+  transition: background .18s ease;
+}
+
+.finding:hover { background: #F7F9FA; }
+
+.finding-number {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 1px;
+  color: #54768D;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.finding h3 {
+  margin: 0 0 3px;
+  color: #30495C;
+  font-size: 11px;
+}
+
+.finding p {
+  margin: 0;
+  color: #596B79;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+/* ASSET METRIC PANELS */
+
+.asset-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 13px;
+}
+
+.asset-card {
+  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #F8FAFB;
+  box-shadow: 0 3px 10px rgba(32,43,56,.035);
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+
+.asset-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 7px 15px rgba(32,43,56,.07);
+}
+
+.asset-heading {
+  margin-bottom: 8px;
+  font-size: 9px;
+  font-weight: 850;
+  letter-spacing: .9px;
+}
+
+.asset-heading.btc { color: #B97824; }
+.asset-heading.eth { color: #287F9A; }
+
+.metric-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.metric-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid #E5EAEE;
+  font-size: 9.5px;
+}
+
+.metric-list li:last-child { border: 0; }
+.metric-list span { color: #637483; }
+.metric-list b { color: #344958; text-align: right; }
+
+/* COMPACT, FILLED TABLES */
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid #D7E0E7;
+  border-radius: 7px;
+  background: #FFFFFF;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 9.5px;
+}
+
+.data-table thead {
+  background: #E7EEF3;
+}
+
+.data-table th {
+  padding: 9px 8px;
+  color: #354F63;
+  border-bottom: 1px solid #D0DCE4;
+  text-align: left;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .35px;
+  text-transform: uppercase;
+  vertical-align: middle;
+  overflow-wrap: break-word;
+}
+
+.data-table td {
+  padding: 7px 8px;
+  color: #3F5261;
+  border-bottom: 1px solid #E6EBEF;
+  text-align: left;
+  vertical-align: middle;
+  overflow-wrap: break-word;
+}
+
+.data-table tbody tr:nth-child(even) {
+  background: #F7F9FA;
+}
+
+.data-table tbody tr:hover {
+  background: #EDF3F6;
+}
+
+.data-table tr:last-child td { border-bottom: 0; }
+
+.data-table th:nth-child(2),
+.data-table th:nth-child(3),
+.data-table td:nth-child(2),
+.data-table td:nth-child(3) {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.data-table td:nth-child(2),
+.data-table td:nth-child(3) {
+  font-weight: 700;
+  color: #344958;
+}
+
+.data-table td.meaning {
+  color: #5D6E7C;
+  font-size: 8.5px;
+  text-align: left !important;
+  white-space: normal;
+  font-weight: 400;
+}
+
+/* Explicit table column widths */
+
+.participation-table th:nth-child(1),
+.participation-table td:nth-child(1) { width: 30%; }
+
+.participation-table th:nth-child(2),
+.participation-table td:nth-child(2) { width: 15%; }
+
+.participation-table th:nth-child(3),
+.participation-table td:nth-child(3) { width: 15%; }
+
+.participation-table th:nth-child(4),
+.participation-table td:nth-child(4) { width: 40%; }
+
+.comparison-table th:nth-child(1),
+.comparison-table td:nth-child(1) { width: 32%; }
+
+.comparison-table th:nth-child(2),
+.comparison-table td:nth-child(2) { width: 14%; }
+
+.comparison-table th:nth-child(3),
+.comparison-table td:nth-child(3) { width: 14%; }
+
+.comparison-table th:nth-child(4),
+.comparison-table td:nth-child(4) { width: 40%; }
+
+/* CHARTS - ORIGINAL THREE LINE CHARTS */
+
+.chart-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.chart-card {
+  padding: 14px 16px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #FFFFFF;
+  box-shadow: 0 3px 11px rgba(32,43,56,.04);
+  transition: transform .2s ease, box-shadow .2s ease;
+  animation: chartIn .45s ease both;
+}
+
+.chart-card:nth-child(2) { animation-delay: .07s; }
+.chart-card:nth-child(3) { animation-delay: .14s; }
+
+@keyframes chartIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.chart-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 17px rgba(32,43,56,.07);
+}
+
+.chart-title {
+  margin-bottom: 3px;
+  color: #30495C;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.chart-subtitle {
+  margin-bottom: 10px;
+  color: #788795;
+  font-size: 8.5px;
+}
+
+.chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.chart-gridlines line {
+  stroke: var(--grid);
+  stroke-width: 1;
+}
+
+.legend {
+  display: flex;
+  gap: 17px;
+  margin-top: 8px;
+  color: #687A88;
+  font-size: 8.5px;
+}
+
+.legend span:before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border-radius: 50%;
+}
+
+.legend .btc:before { background: var(--btc); }
+.legend .eth:before { background: var(--eth); }
+
+/* OBSERVATIONS AND FOOTER */
+
+.observations {
+  padding-left: 18px;
+  color: #586B79;
+  font-size: 10px;
+}
+
+.observations li {
+  margin-bottom: 8px;
+  padding-left: 3px;
+}
+
+.observations strong { color: #30495C; }
+
+.notes {
+  margin: 7px 0;
+  color: #657785;
+  font-size: 8.5px;
+  line-height: 1.6;
+}
+
+.notes strong { color: #40596B; }
+
+.dashboard-action {
+  padding: 8px 0 5px;
+  text-align: center;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 13px 26px;
+  border: 1px solid #1B5274;
+  border-radius: 6px;
+  background: #174563;
+  background-image: linear-gradient(110deg, #174563, #26749A);
+  color: #FFFFFF;
+  text-decoration: none;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+
+.button svg { flex: none; width: 15px; height: 15px; }
+
+.button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 14px rgba(23,69,99,.18);
+}
+
+.button:focus-visible {
+  outline: 3px solid #26749A;
+  outline-offset: 3px;
+}
+
+.dashboard-action .action-note {
+  margin: 9px 0 0;
+  color: #657785;
+  font-size: 9.5px;
+  line-height: 1.5;
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px 18px;
+  padding: 15px 22px;
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 10px 10px;
+  background: #F3F6F8;
+  color: #667987;
+  font-size: 8.5px;
+}
+
+.footer strong { color: #40596B; }
+
+.footer-credit {
+  color: #345B74;
+  font-size: 9px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+/* RESPONSIVE */
+
+@media(max-width: 760px) {
+  body { padding: 13px 7px; }
+  .hero { padding: 26px 21px 21px; }
+  .content { padding: 21px 14px; }
+  .kpi-grid { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
+  .kpi { min-height: 105px; padding: 12px; }
+  .asset-grid { grid-template-columns: 1fr; }
+  .footer { padding: 13px 15px; }
+  .dashboard-action .button { display: flex; width: 100%; }
+}
+
+@media(max-width: 480px) {
+  .hero h1 { font-size: 25px; }
+  .hero-meta { gap: 8px 12px; }
+  .k-value { font-size: 18px; }
+  .data-table { min-width: 610px; }
+}
+
+@media(prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* INTERACTIVE CHARTS (browser version) */
+.sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+.chart-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 24px;
+  margin: 0 0 12px;
+  padding: 10px 13px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #F8FAFB;
+}
+
+.ctl { display: flex; align-items: center; gap: 9px; }
+
+.ctl-label {
+  color: #698195;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.chart-tools button, .view-btn {
+  font: 700 10px/1 Arial, Helvetica, sans-serif;
+  letter-spacing: .2px;
+  cursor: pointer;
+}
+
+.seg { display: inline-flex; border: 1px solid #B9C7D2; border-radius: 6px; overflow: hidden; background: #FFFFFF; }
+
+.seg button {
+  padding: 8px 13px;
+  border: 0;
+  border-right: 1px solid #D3DEE6;
+  background: #FFFFFF;
+  color: #3A5568;
+}
+
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed="true"] { background: var(--navy2); color: #FFFFFF; }
+.seg button:not([aria-pressed="true"]):hover { background: #EDF3F6; }
+
+.ser-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 11px;
+  border: 1px solid #B9C7D2;
+  border-radius: 6px;
+  background: #FFFFFF;
+  color: #30495C;
+}
+
+.ser-btn + .ser-btn { margin-left: 6px; }
+.ser-btn i { width: 9px; height: 9px; border-radius: 50%; background: var(--c); }
+.ser-btn[aria-pressed="false"] { color: #7C8C99; background: #F3F6F8; }
+.ser-btn[aria-pressed="false"] i { background: transparent; box-shadow: inset 0 0 0 2px var(--c); }
+.ser-btn:hover { background: #EDF3F6; }
+
+.chart-tools button:focus-visible, .view-btn:focus-visible { outline: 2px solid #34738F; outline-offset: 2px; }
+
+.card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.card-head .chart-subtitle { margin-bottom: 8px; }
+
+.view-btn {
+  flex: none;
+  padding: 7px 10px;
+  border: 1px solid #B9C7D2;
+  border-radius: 6px;
+  background: #FFFFFF;
+  color: #30495C;
+}
+
+.view-btn:hover { background: #EDF3F6; }
+
+.chart-card:hover { transform: none; }
+.plot-wrap { position: relative; min-height: 250px; }
+svg.plot { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+svg.plot:focus-visible { outline: 2px solid #34738F; outline-offset: 3px; border-radius: 4px; }
+
+.tip {
+  display: none;
+  position: absolute;
+  z-index: 3;
+  min-width: 150px;
+  padding: 8px 11px;
+  border: 1px solid #C9D5DE;
+  border-radius: 7px;
+  background: rgba(255,255,255,.98);
+  box-shadow: 0 6px 16px rgba(16,43,67,.14);
+  color: #30495C;
+  font-size: 10.5px;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+.t-date { margin-bottom: 3px; color: #102B43; font-weight: 800; }
+.t-row { display: flex; align-items: center; gap: 7px; padding: 1px 0; }
+.t-row i { flex: none; width: 8px; height: 8px; border-radius: 50%; }
+.t-row span { flex: 1; }
+.t-row b { font-weight: 700; text-align: right; }
+.t-neg { color: var(--red); }
+.t-pos { color: var(--green); }
+.t-mut { color: var(--muted); font-weight: 400; }
+
+.chart-table-wrap { max-height: 292px; overflow: auto; }
+.chart-table { table-layout: auto; }
+.chart-table th { position: sticky; top: 0; background: #E7EEF3; }
+.chart-table td.positive { color: var(--green); }
+.chart-table td.negative { color: var(--red); }
+
+@media(max-width: 480px) {
+  .ctl-label { display: none; }
+  .chart-tools { gap: 8px 12px; padding: 9px; }
+  .seg button { padding: 8px 10px; }
+  .card-head { flex-direction: column; gap: 2px; }
+  .view-btn { align-self: flex-start; margin-bottom: 8px; }
+}
+</style>
+</head>
+
+<body>
+<div class="report">
+
+<p class="subject"><strong>Subject:</strong> Digital Asset Market Intelligence Brief | BTC &amp; ETH | {{date_short}}</p>
+
+<header class="hero">
+  <div class="eyebrow">Digital Asset Intelligence · Spot Market</div>
+  <h1>Bitcoin &amp; Ethereum<br>Market Intelligence Brief</h1>
+  <p>Executive view of price performance, momentum, volatility, trading participation and relative market strength.</p>
+  <div class="hero-meta">
+    <span>AS OF {{as_of_upper}}</span>
+    <span>31 DAILY OHLC OBSERVATIONS · 30 RETURN INTERVALS</span>
+    <span>KRAKEN SPOT · USD PAIRS</span>
+  </div>
+</header>
+
+<main class="content">
+
+<section class="section">
+  <div class="kicker">01 · Executive dashboard</div>
+  <h2>Market snapshot</h2>
+  <p class="intro">Headline indicators selected to show price direction, drawdown, risk intensity and relative performance.</p>
+
+  <div class="kpi-grid">
+    <article class="kpi btc">
+      <div class="k-label">Bitcoin · Latest close</div>
+      <div class="k-value">{{btc_close}}</div>
+      <div class="k-context{{btc_daily_cls}}">Daily move {{btc_daily}}</div>
+    </article>
+    <article class="kpi eth">
+      <div class="k-label">Ethereum · Latest close</div>
+      <div class="k-value">{{eth_close}}</div>
+      <div class="k-context{{eth_daily_cls}}">Daily move {{eth_daily}}</div>
+    </article>
+    <article class="kpi btc">
+      <div class="k-label">BTC · 30-return performance</div>
+      <div class="k-value{{btc_r30_cls}}">{{btc_r30}}</div>
+      <div class="k-context">31 closes · first to latest</div>
+    </article>
+    <article class="kpi eth">
+      <div class="k-label">ETH · 30-return performance</div>
+      <div class="k-value{{eth_r30_cls}}">{{eth_r30}}</div>
+      <div class="k-context">31 closes · first to latest</div>
+    </article>
+    <article class="kpi risk">
+      <div class="k-label">BTC · Maximum drawdown</div>
+      <div class="k-value{{btc_maxdd_cls}}">{{btc_maxdd}}</div>
+      <div class="k-context">From running closing-price peak</div>
+    </article>
+    <article class="kpi risk">
+      <div class="k-label">ETH · Maximum drawdown</div>
+      <div class="k-value{{eth_maxdd_cls}}">{{eth_maxdd}}</div>
+      <div class="k-context">From running closing-price peak</div>
+    </article>
+    <article class="kpi blue">
+      <div class="k-label">BTC / ETH correlation</div>
+      <div class="k-value">{{corr}}</div>
+      <div class="k-context">30 aligned daily returns</div>
+    </article>
+    <article class="kpi blue">
+      <div class="k-label">ETH / BTC realised volatility</div>
+      <div class="k-value">{{vol_ratio_x}}</div>
+      <div class="k-context">Annualised · 30 returns</div>
+    </article>
+  </div>
+
+  <div class="callout">
+    <div class="callout-title">Executive interpretation</div>
+    <p>{{callout_exec}}</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="kicker">02 · Market intelligence</div>
+  <h2>Key findings from the historical data</h2>
+  <p class="intro">Five evidence-based observations translating the measured market indicators into executive-level insights.</p>
+
+  <div class="findings">
+    <article class="finding">
+      <div class="finding-number">01</div>
+      <div>
+        <h3>{{f1_title}}</h3>
+        <p>{{f1_text}}</p>
+      </div>
+    </article>
+
+    <article class="finding">
+      <div class="finding-number">02</div>
+      <div>
+        <h3>{{f2_title}}</h3>
+        <p>{{f2_text}}</p>
+      </div>
+    </article>
+
+    <article class="finding">
+      <div class="finding-number">03</div>
+      <div>
+        <h3>{{f3_title}}</h3>
+        <p>{{f3_text}}</p>
+      </div>
+    </article>
+
+    <article class="finding">
+      <div class="finding-number">04</div>
+      <div>
+        <h3>{{f4_title}}</h3>
+        <p>{{f4_text}}</p>
+      </div>
+    </article>
+
+    <article class="finding">
+      <div class="finding-number">05</div>
+      <div>
+        <h3>{{f5_title}}</h3>
+        <p>{{f5_text}}</p>
+      </div>
+    </article>
+  </div>
+
+  <div class="callout">
+    <div class="callout-title">What to monitor next</div>
+    <p>{{monitor_text}}</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="kicker">03 · Momentum and risk</div>
+  <h2>Short- and medium-term profile</h2>
+  <p class="intro">Returns measure direction. RSI describes momentum. ATR and realised volatility quantify different forms of price variability.</p>
+
+  <div class="asset-grid">
+    <article class="asset-card">
+      <div class="asset-heading btc">BITCOIN · BTC/USD</div>
+      <ul class="metric-list">
+        <li><span>7-day return</span><b{{btc_r7_attr}}>{{btc_r7}}</b></li>
+        <li><span>15-day return</span><b{{btc_r15_attr}}>{{btc_r15}}</b></li>
+        <li><span>30-day return</span><b{{btc_r30_attr}}>{{btc_r30}}</b></li>
+        <li><span>14-day RSI</span><b>{{btc_rsi}}</b></li>
+        <li><span>14-day ATR</span><b>{{btc_atr}}</b></li>
+        <li><span>ATR / price</span><b>{{btc_atr_pct}}</b></li>
+        <li><span>14-day realised volatility</span><b>{{btc_vol14}}</b></li>
+        <li><span>30-return realised volatility</span><b>{{btc_vol30}}</b></li>
+      </ul>
+    </article>
+
+    <article class="asset-card">
+      <div class="asset-heading eth">ETHEREUM · ETH/USD</div>
+      <ul class="metric-list">
+        <li><span>7-day return</span><b{{eth_r7_attr}}>{{eth_r7}}</b></li>
+        <li><span>15-day return</span><b{{eth_r15_attr}}>{{eth_r15}}</b></li>
+        <li><span>30-day return</span><b{{eth_r30_attr}}>{{eth_r30}}</b></li>
+        <li><span>14-day RSI</span><b>{{eth_rsi}}</b></li>
+        <li><span>14-day ATR</span><b>{{eth_atr}}</b></li>
+        <li><span>ATR / price</span><b>{{eth_atr_pct}}</b></li>
+        <li><span>14-day realised volatility</span><b>{{eth_vol14}}</b></li>
+        <li><span>30-return realised volatility</span><b>{{eth_vol30}}</b></li>
+      </ul>
+    </article>
+  </div>
+
+  <div class="insight"><strong>Risk interpretation:</strong> {{risk_text}}</div>
+</section>
+
+<section class="section">
+  <div class="kicker">04 · Market participation</div>
+  <h2>Volume, turnover and session quality</h2>
+  <p class="intro">Latest-session activity is compared with the preceding seven sessions to identify changes in observed participation.</p>
+
+  <div class="table-wrap">
+    <table class="data-table participation-table">
+      <thead>
+        <tr>
+          <th>Latest-session measure</th>
+          <th>BTC</th>
+          <th>ETH</th>
+          <th>Business interpretation</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Base-asset volume</td><td>{{btc_volume}}</td><td>{{eth_volume}}</td><td class="meaning">Units traded in the daily candle</td></tr>
+        <tr><td>Volume vs previous 7-session average</td><td{{btc_volratio_attr}}>{{btc_volratio}}</td><td{{eth_volratio_attr}}>{{eth_volratio}}</td><td class="meaning">Participation relative to recent baseline</td></tr>
+        <tr><td>Estimated USD turnover</td><td>{{btc_turnover}}</td><td>{{eth_turnover}}</td><td class="meaning">Base volume multiplied by VWAP</td></tr>
+        <tr><td>Turnover vs previous 7-session average</td><td{{btc_turnratio_attr}}>{{btc_turnratio}}</td><td{{eth_turnratio_attr}}>{{eth_turnratio}}</td><td class="meaning">Value traded relative to recent baseline</td></tr>
+        <tr><td>Trade count</td><td>{{btc_trades}}</td><td>{{eth_trades}}</td><td class="meaning">Recorded trades in the daily candle</td></tr>
+        <tr><td>Trade count vs previous 7-session average</td><td{{btc_traderatio_attr}}>{{btc_traderatio}}</td><td{{eth_traderatio_attr}}>{{eth_traderatio}}</td><td class="meaning">Transaction activity relative to baseline</td></tr>
+        <tr><td>Estimated average USD turnover per trade</td><td>{{btc_notional}}</td><td>{{eth_notional}}</td><td class="meaning">Approximate average trade notional</td></tr>
+        <tr><td>Close versus session VWAP</td><td{{btc_vwaprel_attr}}>{{btc_vwaprel}}</td><td{{eth_vwaprel_attr}}>{{eth_vwaprel}}</td><td class="meaning">Close relative to volume-weighted average</td></tr>
+        <tr><td>Close location in daily range</td><td>{{btc_loc}}</td><td>{{eth_loc}}</td><td class="meaning">0 = daily low; 100 = daily high</td></tr>
+        <tr><td>Latest daily high-low range / close</td><td>{{btc_range}}</td><td>{{eth_range}}</td><td class="meaning">Daily price excursion</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="insight"><strong>Participation signal:</strong> {{participation_text}}</div>
+
+  <p class="notes">Average trade notional is estimated from base volume × VWAP divided by trade count. It is not an exchange-reported order size and does not reveal trade direction or participant identity.</p>
+</section>
+
+<section class="section">
+  <div class="kicker">05 · Comparative diagnostics</div>
+  <h2>Volatility, high-low and relative strength</h2>
+  <p class="intro">A side-by-side comparison of price performance, momentum, variability and position within the observed price envelope.</p>
+
+  <div class="table-wrap">
+    <table class="data-table comparison-table">
+      <thead>
+        <tr>
+          <th>Metric</th>
+          <th>BTC</th>
+          <th>ETH</th>
+          <th>Analytical interpretation</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>7-day price return</td><td{{btc_r7_attr}}>{{btc_r7}}</td><td{{eth_r7_attr}}>{{eth_r7}}</td><td class="meaning">Short-term direction</td></tr>
+        <tr><td>15-day price return</td><td{{btc_r15_attr}}>{{btc_r15}}</td><td{{eth_r15_attr}}>{{eth_r15}}</td><td class="meaning">Intermediate momentum</td></tr>
+        <tr><td>30-day price return</td><td{{btc_r30_attr}}>{{btc_r30}}</td><td{{eth_r30_attr}}>{{eth_r30}}</td><td class="meaning">Full sample performance</td></tr>
+        <tr><td>14-day RSI</td><td>{{btc_rsi}}</td><td>{{eth_rsi}}</td><td class="meaning">Momentum oscillator</td></tr>
+        <tr><td>14-day ATR / price</td><td>{{btc_atr_pct}}</td><td>{{eth_atr_pct}}</td><td class="meaning">Average true range scaled to price</td></tr>
+        <tr><td>14-day realised volatility</td><td>{{btc_vol14}}</td><td>{{eth_vol14}}</td><td class="meaning">Recent return dispersion, annualised</td></tr>
+        <tr><td>30-return realised volatility</td><td>{{btc_vol30}}</td><td>{{eth_vol30}}</td><td class="meaning">Full sample return dispersion, annualised</td></tr>
+        <tr><td>31-close observed high</td><td>{{btc_high31}}</td><td>{{eth_high31}}</td><td class="meaning">Highest closing price in the sample</td></tr>
+        <tr><td>31-close observed low</td><td>{{btc_low31}}</td><td>{{eth_low31}}</td><td class="meaning">Lowest closing price in the sample</td></tr>
+        <tr><td>Distance from sample high</td><td{{btc_disthigh_attr}}>{{btc_disthigh}}</td><td{{eth_disthigh_attr}}>{{eth_disthigh}}</td><td class="meaning">Current close relative to sample high</td></tr>
+        <tr><td>Distance from sample low</td><td{{btc_distlow_attr}}>{{btc_distlow}}</td><td{{eth_distlow_attr}}>{{eth_distlow}}</td><td class="meaning">Current close relative to sample low</td></tr>
+        <tr><td>Latest close position in daily range</td><td>{{btc_loc}}</td><td>{{eth_loc}}</td><td class="meaning">Position between daily low and high</td></tr>
+        <tr><td>Close versus session VWAP</td><td{{btc_vwaprel_attr}}>{{btc_vwaprel}}</td><td{{eth_vwaprel_attr}}>{{eth_vwaprel}}</td><td class="meaning">Relative to volume-weighted average</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="insight"><strong>Relative-strength spread:</strong> {{spread_text}}</div>
+</section>
+
+<section class="section">
+  <div class="kicker">06 · Market behaviour</div>
+  <h2>Price and risk visualisation</h2>
+  <p class="intro">Three complementary views: indexed performance, daily returns and drawdown from the running closing-price peak. Hover or tap a chart for values, change the window, or hide a series.</p>
+
+  <div class="chart-tools" role="group" aria-label="Chart controls">
+      <div class="ctl"><span class="ctl-label">Window</span><div class="seg" role="group" aria-label="Window length">
+        <button type="button" data-win="7" aria-pressed="false">7 days</button><button type="button" data-win="14" aria-pressed="false">14 days</button><button type="button" data-win="30" aria-pressed="true">30 days</button></div></div>
+      <div class="ctl"><span class="ctl-label">Series</span><div>
+        <button type="button" class="ser-btn" data-ser="BTC" aria-pressed="true" style="--c:#F2A84A"><i></i>Bitcoin</button><button type="button" class="ser-btn" data-ser="ETH" aria-pressed="true" style="--c:#68AAFF"><i></i>Ethereum</button></div></div>
+    </div>
+    <div class="chart-grid">
+      <article class="chart-card" data-chart="index"><div class="card-head"><div><div class="chart-title">Indexed closing-price performance</div><div class="chart-subtitle" data-sub></div></div><button type="button" class="view-btn" data-view aria-pressed="false">View data</button></div><div class="plot-wrap"></div><p class="sr" aria-live="polite" data-live></p></article>
+      <article class="chart-card" data-chart="returns"><div class="card-head"><div><div class="chart-title">Daily return profile</div><div class="chart-subtitle" data-sub></div></div><button type="button" class="view-btn" data-view aria-pressed="false">View data</button></div><div class="plot-wrap"></div><p class="sr" aria-live="polite" data-live></p></article>
+      <article class="chart-card" data-chart="drawdown"><div class="card-head"><div><div class="chart-title">Drawdown from running closing-price peak</div><div class="chart-subtitle" data-sub></div></div><button type="button" class="view-btn" data-view aria-pressed="false">View data</button></div><div class="plot-wrap"></div><p class="sr" aria-live="polite" data-live></p></article>
+    </div>
+    <noscript><p class="notes">The interactive charts need JavaScript. The same values are in the downloadable dashboard.</p></noscript>
+</section>
+
+<section class="section">
+  <div class="kicker">07 · Decision support</div>
+  <h2>Business intelligence observations</h2>
+  <p class="intro">Monitoring priorities based on the measured historical indicators.</p>
+
+  <ol class="observations">
+    <li><strong>Relative asset resilience:</strong> Monitor the BTC–ETH return spread across rolling 7-, 15- and 30-return windows. Persistent divergence is more informative than a single-session ranking.</li>
+    <li><strong>Participation confirmation:</strong> Assess price movement alongside volume, turnover and trade-count ratios. A combined increase indicates a stronger change in observed activity than volume alone.</li>
+    <li><strong>Risk normalisation:</strong> Compare ATR as a percentage of price and realised volatility before comparing the apparent risk of assets with different price levels.</li>
+    <li><strong>Session pressure:</strong> Use close location and close-versus-VWAP to describe where the session ended relative to its trading range and volume-weighted average.</li>
+    <li><strong>Co-movement and diversification:</strong> Monitor rolling correlation. High correlation in a short sample may reduce observed diversification benefits, but does not establish future correlation.</li>
+  </ol>
+
+  <div class="callout">
+    <div class="callout-title">Recommended monitoring priorities</div>
+    <p>Prioritise sustained changes in relative strength, volatility, trading participation and drawdown. Escalate when multiple independent indicators confirm a material change, rather than reacting to one isolated technical measure.</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="kicker">08 · Data governance</div>
+  <h2>Scope, methodology and limitations</h2>
+
+  <p class="notes"><strong>Source:</strong> Supplied CSV representing Kraken spot OHLC daily records for XBT/USD and ETH/USD. The file contains 31 daily observations and 30 aligned return observations.</p>
+  <p class="notes"><strong>Return windows:</strong> Close-to-close returns. Seven-return performance compares the latest close with the close seven intervals earlier. Fifteen- and thirty-return windows follow the same convention.</p>
+  <p class="notes"><strong>RSI:</strong> 14-period simple average gains and losses. ATR: 14-period average true range. Realised volatility: sample standard deviation of daily returns annualised using √365. Alternative RSI smoothing conventions can produce slightly different readings.</p>
+  <p class="notes"><strong>Activity:</strong> Latest-session volume, estimated USD turnover and trade count are compared with the previous seven sessions. Estimated turnover uses base volume multiplied by reported VWAP. Average trade notional divides estimated turnover by recorded trade count.</p>
+  <p class="notes"><strong>Important limitations:</strong> This is an exchange-specific spot dataset, not consolidated global market data. OHLCV and trade count do not provide bid-ask spread, order-book depth, aggressor-side volume, derivatives open interest, funding rates, liquidations, ETF flows, on-chain flows, macroeconomic context or sentiment.</p>
+  <p class="notes"><strong>Analysis approach:</strong> The intelligence findings are evidence-based interpretations of calculated historical metrics. No predictive AI model or external AI signal has been run. These indicators are decision-support context, not investment advice.</p>
+</section>
+<div class="dashboard-action">
+  <a class="button" href="https://rizwana-qa.github.io/market-data-quality-pipeline/reports/{{date}}/dashboard.html" download="market_report_{{date}}.html"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.5h4v4M13.5 2.5 7 9M12 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3"/></svg>Open Detailed Interactive Report</a>
+  <p class="action-note">Opens the full interactive dashboard in your browser.</p>
+</div>
+
+</main>
+
+<footer class="footer">
+  <div>
+    <strong>Executive market-monitoring report</strong><br>
+    This report contains data for {{as_of_long}} and is based on the supplied historical CSV. It is not a live market feed.
+  </div>
+  <div class="footer-credit">Created by Rizwana Zahoor</div>
+</footer>
+
+</div>
+<script type="application/json" id="report-data">{{report_json}}</script>
+<script>
+(function () {
+  'use strict';
+  var data = JSON.parse(document.getElementById('report-data').textContent);
+  var SER = ['BTC', 'ETH'];
+  var COL = { BTC: '#F2A84A', ETH: '#68AAFF' };
+  var TXT = { BTC: '#9A5F14', ETH: '#226F89' };
+  var NAME = { BTC: 'Bitcoin', ETH: 'Ethereum' };
+  var AX = '#5B6B79', GRID = '#E3E9EE', ZERO = '#8FA1B0', FONT = 'Arial, Helvetica, sans-serif';
+  var MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var NS = 'http://www.w3.org/2000/svg';
+  var state = { win: '30', on: { BTC: true, ETH: true } };
+
+  function dl(s) { var p = s.split('-'); return (+p[2]) + ' ' + MON[+p[1] - 1]; }
+  function fmt(v, dec, sign) {
+    var r = +v.toFixed(dec), t = Math.abs(r).toFixed(dec) + '%';
+    return r < 0 ? '−' + t : (sign && r > 0 ? '+' + t : t);
+  }
+  function usd(v) { return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function el(tag, attrs, parent, text) {
+    var n = document.createElementNS(NS, tag);
+    for (var k in attrs) if (Object.prototype.hasOwnProperty.call(attrs, k)) n.setAttribute(k, attrs[k]);
+    if (text != null) n.textContent = text;
+    if (parent) parent.appendChild(n);
+    return n;
+  }
+  function niceTicks(lo, hi, n) {
+    var span = hi - lo || 1, step = Math.pow(10, Math.floor(Math.log10(span / n))), err = span / n / step;
+    step *= err >= 7.5 ? 10 : err >= 3.5 ? 5 : err >= 1.5 ? 2 : 1;
+    var out = [], t0 = Math.floor(lo / step) * step, t1 = Math.ceil(hi / step) * step;
+    for (var v = t0; v <= t1 + step / 2; v += step) out.push(+v.toFixed(10));
+    return out;
+  }
+  function visible() { return SER.filter(function (s) { return state.on[s]; }); }
+
+  /* chart definitions ------------------------------------------------------ */
+  var charts = {
+    index: {
+      type: 'line', xs: 'dates', title: 'Indexed closing-price performance',
+      vals: function (w, s) { return w.index[s]; },
+      sub: function (w) { return 'First close in window = 100 · ' + w.returns + ' returns'; },
+      tick: function (v) { return v.toFixed(0); },
+      base: 100,
+      tip: function (w, s, i) { return w.index[s][i].toFixed(2) + ' <span class="t-mut">(close ' + usd(w.close_usd[s][i]) + ')</span>'; },
+      endLabel: function (v) { return v.toFixed(1); },
+      summary: function (w) { return visible().map(function (s) { return NAME[s] + ' ' + w.index[s][w.index[s].length - 1].toFixed(1); }).join(', '); }
+    },
+    returns: {
+      type: 'bars', xs: 'return_dates', title: 'Daily return profile',
+      vals: function (w, s) { return w.return_pct[s]; },
+      sub: function (w) { return 'Daily percentage returns · zero baseline · ' + w.returns + ' returns'; },
+      tick: function (v) { return fmt(v, 0); },
+      tip: function (w, s, i) { var v = w.return_pct[s][i]; return '<span class="' + (v < 0 ? 't-neg' : 't-pos') + '">' + fmt(v, 2, true) + '</span>'; },
+      summary: function (w) {
+        return visible().map(function (s) {
+          var a = w.return_pct[s], lo = Math.min.apply(null, a), hi = Math.max.apply(null, a);
+          return NAME[s] + ' ranged from ' + fmt(lo, 2, true) + ' to ' + fmt(hi, 2, true);
+        }).join('; ');
+      }
+    },
+    drawdown: {
+      type: 'area', xs: 'dates', title: 'Drawdown from running closing-price peak',
+      vals: function (w, s) { return w.drawdown_pct[s]; },
+      sub: function (w) { return 'Decline from the highest close observed up to each date · ' + w.returns + ' returns'; },
+      tick: function (v) { return fmt(v, 0); },
+      tip: function (w, s, i) { return '<span class="t-neg">' + fmt(w.drawdown_pct[s][i], 2) + '</span> <span class="t-mut">from peak</span>'; },
+      endLabel: function (v) { return fmt(v, 1); },
+      summary: function (w) { return visible().map(function (s) { var a = w.drawdown_pct[s]; return NAME[s] + ' ' + fmt(a[a.length - 1], 2) + ' at the end, worst ' + fmt(Math.min.apply(null, a), 2); }).join('; '); }
+    }
+  };
+  var cards = {};
+  Array.prototype.forEach.call(document.querySelectorAll('[data-chart]'), function (c) {
+    var id = c.getAttribute('data-chart');
+    cards[id] = { root: c, wrap: c.querySelector('.plot-wrap'), live: c.querySelector('[data-live]'), sub: c.querySelector('[data-sub]'), btn: c.querySelector('[data-view]'), table: false, hover: null, api: null };
+  });
+
+  /* rendering -------------------------------------------------------------- */
+  function renderTable(id) {
+    var cfg = charts[id], card = cards[id], w = data[state.win], xs = w[cfg.xs], vis = visible();
+    card.wrap.innerHTML = '';
+    var box = document.createElement('div'); box.className = 'table-wrap chart-table-wrap';
+    var t = document.createElement('table'); t.className = 'data-table chart-table';
+    var cap = document.createElement('caption'); cap.className = 'sr'; cap.textContent = cfg.title + ', ' + w.returns + ' returns'; t.appendChild(cap);
+    var h = '<thead><tr><th scope="col">Date</th>' + vis.map(function (s) { return '<th scope="col">' + NAME[s] + '</th>'; }).join('') + '</tr></thead><tbody>';
+    xs.forEach(function (d, i) {
+      h += '<tr><td>' + dl(d) + '</td>' + vis.map(function (s) {
+        var v = cfg.vals(w, s)[i];
+        var cls = cfg.type === 'line' ? '' : (v < 0 ? ' class="negative"' : (cfg.type === 'bars' && v > 0 ? ' class="positive"' : ''));
+        var txt = cfg.type === 'line' ? v.toFixed(2) : fmt(v, 2, cfg.type === 'bars');
+        return '<td' + cls + '>' + txt + '</td>';
+      }).join('') + '</tr>';
+    });
+    t.insertAdjacentHTML('beforeend', h + '</tbody>'); box.appendChild(t); card.wrap.appendChild(box);
+  }
+
+  function render(id) {
+    var cfg = charts[id], card = cards[id], w = data[state.win], vis = visible();
+    card.sub.textContent = cfg.sub(w);
+    card.live.textContent = cfg.title + ', window ' + state.win + ' days. ' + cfg.summary(w) + '.';
+    if (card.table) { renderTable(id); return; }
+    var wrap = card.wrap; wrap.innerHTML = '';
+    var W = Math.max(Math.round(wrap.clientWidth), 260), H = W < 520 ? 250 : 290;
+    var m = { l: 46, r: cfg.type === 'bars' ? 10 : (W < 420 ? 56 : 66), t: 14, b: 28 };
+    var pw = W - m.l - m.r, ph = H - m.t - m.b;
+    var xs = w[cfg.xs], n = xs.length;
+    var all = []; vis.forEach(function (s) { all = all.concat(cfg.vals(w, s)); });
+    var lo = Math.min.apply(null, all), hi = Math.max.apply(null, all);
+    if (cfg.base != null) { lo = Math.min(lo, cfg.base); hi = Math.max(hi, cfg.base); }
+    if (cfg.type === 'bars') { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+    if (cfg.type === 'area') { hi = 0; }
+    var pad = (hi - lo) * 0.06 || 1; if (cfg.type !== 'area') hi += pad; lo -= pad;
+    var ticks = niceTicks(lo, hi, 5), y0 = ticks[0], y1 = ticks[ticks.length - 1];
+    var sx = cfg.type === 'bars' ? function (i) { return m.l + pw / n * (i + 0.5); } : function (i) { return m.l + pw * i / (n - 1); };
+    var sy = function (v) { return m.t + (y1 - v) / (y1 - y0) * ph; };
+
+    var svg = el('svg', { width: W, height: H, viewBox: '0 0 ' + W + ' ' + H, 'class': 'plot', role: 'img', tabindex: 0,
+      'aria-label': cfg.title + '. ' + cfg.summary(w) + '. Use the left and right arrow keys to read values, or switch to the data table.' }, wrap);
+    var g = el('g', {}, svg);
+    ticks.forEach(function (t) {
+      var y = sy(t);
+      el('line', { x1: m.l, x2: m.l + pw, y1: y, y2: y, stroke: GRID, 'stroke-width': 1 }, g);
+      el('text', { x: m.l - 8, y: y + 3.5, 'text-anchor': 'end', 'font-size': 11, 'font-family': FONT, fill: AX }, g, cfg.tick(t));
+    });
+    if (cfg.type !== 'line') el('line', { x1: m.l, x2: m.l + pw, y1: sy(0), y2: sy(0), stroke: ZERO, 'stroke-width': 1 }, g);
+    if (cfg.base != null) el('line', { x1: m.l, x2: m.l + pw, y1: sy(cfg.base), y2: sy(cfg.base), stroke: ZERO, 'stroke-dasharray': '5 4' }, g);
+    el('line', { x1: m.l, x2: m.l + pw, y1: m.t + ph, y2: m.t + ph, stroke: '#C5D0D8' }, g);
+    var every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(pw / 62)))), tx = [];
+    for (var q = 0; q < n; q += every) tx.push(q);
+    if (tx[tx.length - 1] !== n - 1 && (n - 1 - tx[tx.length - 1]) >= every * 0.6) tx.push(n - 1);
+    tx.forEach(function (i) {
+      el('line', { x1: sx(i), x2: sx(i), y1: m.t + ph, y2: m.t + ph + 4, stroke: '#C5D0D8' }, g);
+      el('text', { x: sx(i), y: m.t + ph + 18, 'text-anchor': 'middle', 'font-size': 11, 'font-family': FONT, fill: AX }, g, dl(xs[i]));
+    });
+
+    var labels = [];
+    vis.forEach(function (s) {
+      var v = cfg.vals(w, s);
+      if (cfg.type === 'bars') {
+        var k = vis.length, band = pw / n, bw = Math.max(1.5, Math.min(10, (band - 3) / k)), off = (k === 1 ? 0 : (s === 'BTC' ? -bw - 0.5 : 0.5));
+        var gb = el('g', { fill: COL[s] }, svg);
+        v.forEach(function (x, i) {
+          var h = Math.max(Math.abs(sy(x) - sy(0)), 0.8), yy = x >= 0 ? sy(0) - h : sy(0);
+          el('rect', { x: sx(i) + (k === 1 ? -bw / 2 : off), y: yy, width: bw, height: h, rx: 1.2 }, gb);
+        });
+        var ex = 0; v.forEach(function (x, i) { if (Math.abs(x) > Math.abs(v[ex])) ex = i; });
+        labels.push({ s: s, x: sx(ex) + (k === 1 ? 0 : off + bw / 2), y: v[ex] >= 0 ? sy(v[ex]) - 6 : sy(v[ex]) + 14, txt: fmt(v[ex], 2, true), anchor: 'middle' });
+      } else {
+        var pts = v.map(function (x, i) { return sx(i).toFixed(1) + ',' + sy(x).toFixed(1); }).join(' ');
+        if (cfg.type === 'area') el('path', { d: 'M' + sx(0).toFixed(1) + ',' + sy(0).toFixed(1) + ' L' + pts.split(' ').join(' L') + ' L' + sx(n - 1).toFixed(1) + ',' + sy(0).toFixed(1) + ' Z', fill: COL[s], 'fill-opacity': s === 'ETH' ? 0.13 : 0.11 }, svg);
+        el('polyline', { points: pts, fill: 'none', stroke: COL[s], 'stroke-width': W < 420 ? 2.4 : 3, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }, svg);
+        el('circle', { cx: sx(n - 1), cy: sy(v[n - 1]), r: 4.5, fill: COL[s], stroke: '#fff', 'stroke-width': 1.5 }, svg);
+        labels.push({ s: s, x: sx(n - 1) + 10, y: sy(v[n - 1]) + 4, txt: (s === 'BTC' ? 'BTC ' : 'ETH ') + cfg.endLabel(v[n - 1]), anchor: 'start', end: true });
+      }
+    });
+    labels.sort(function (a, b) { return a.y - b.y; });
+    for (var i = 1; i < labels.length; i++) if (labels[i].y - labels[i - 1].y < 14) labels[i].y = labels[i - 1].y + 14;
+    labels.forEach(function (l) {
+      var x = l.x; if (!l.end) x = Math.min(Math.max(x, m.l + 16), m.l + pw - 16);
+      el('text', { x: x, y: l.y, 'text-anchor': l.anchor, 'font-size': 11.5, 'font-weight': 700, 'font-family': FONT, fill: TXT[l.s] }, svg, l.txt);
+    });
+
+    /* hover layer */
+    var xh = el('line', { y1: m.t, y2: m.t + ph, stroke: '#7D8F9E', 'stroke-width': 1, 'stroke-dasharray': '3 3', visibility: 'hidden', 'pointer-events': 'none' }, svg);
+    var band = cfg.type === 'bars' ? el('rect', { y: m.t, height: ph, fill: '#102B43', 'fill-opacity': 0.06, visibility: 'hidden', 'pointer-events': 'none' }, svg) : null;
+    var dots = {}; if (cfg.type !== 'bars') vis.forEach(function (s) { dots[s] = el('circle', { r: 5, fill: COL[s], stroke: '#fff', 'stroke-width': 2, visibility: 'hidden', 'pointer-events': 'none' }, svg); });
+    var tip = document.createElement('div'); tip.className = 'tip'; tip.setAttribute('role', 'status'); wrap.appendChild(tip);
+    var hit = el('rect', { x: m.l, y: m.t, width: pw, height: ph + 2, fill: 'transparent' }, svg);
+
+    function show(i) {
+      i = Math.max(0, Math.min(n - 1, i)); card.hover = i;
+      var x = sx(i); xh.setAttribute('x1', x); xh.setAttribute('x2', x); xh.setAttribute('visibility', cfg.type === 'bars' ? 'hidden' : 'visible');
+      if (band) { var bwid = pw / n; band.setAttribute('x', x - bwid / 2); band.setAttribute('width', bwid); band.setAttribute('visibility', 'visible'); }
+      vis.forEach(function (s) { if (dots[s]) { dots[s].setAttribute('cx', x); dots[s].setAttribute('cy', sy(cfg.vals(w, s)[i])); dots[s].setAttribute('visibility', 'visible'); } });
+      var html = '<div class="t-date">' + dl(xs[i]) + '</div>' + vis.map(function (s) {
+        return '<div class="t-row"><i style="background:' + COL[s] + '"></i><span>' + NAME[s] + '</span><b>' + cfg.tip(w, s, i) + '</b></div>';
+      }).join('');
+      tip.innerHTML = html; tip.style.display = 'block';
+      var tw = tip.offsetWidth, th = tip.offsetHeight, left = x + 14; if (left + tw > W - 4) left = x - tw - 14; if (left < 4) left = 4;
+      var topv = Math.max(m.t, Math.min(sy(cfg.vals(w, vis[0])[i]) - th / 2, m.t + ph - th)); tip.style.left = left + 'px'; tip.style.top = topv + 'px';
+    }
+    function clear() { card.hover = null; tip.style.display = 'none'; xh.setAttribute('visibility', 'hidden'); if (band) band.setAttribute('visibility', 'hidden'); for (var s in dots) dots[s].setAttribute('visibility', 'hidden'); }
+    function idxAt(e) {
+      var r = svg.getBoundingClientRect(), x = (e.clientX - r.left) * (W / r.width);
+      return cfg.type === 'bars' ? Math.floor((x - m.l) / (pw / n)) : Math.round((x - m.l) / pw * (n - 1));
+    }
+    hit.addEventListener('pointermove', function (e) { show(idxAt(e)); });
+    hit.addEventListener('pointerdown', function (e) { show(idxAt(e)); });
+    hit.addEventListener('pointerleave', function (e) { if (e.pointerType === 'mouse') clear(); });
+    svg.addEventListener('keydown', function (e) {
+      var k = e.key, cur = card.hover == null ? -1 : card.hover;
+      if (k === 'ArrowRight') { show(cur + 1); e.preventDefault(); } else if (k === 'ArrowLeft') { show(cur < 0 ? n - 1 : cur - 1); e.preventDefault(); }
+      else if (k === 'Home') { show(0); e.preventDefault(); } else if (k === 'End') { show(n - 1); e.preventDefault(); } else if (k === 'Escape') { clear(); }
+    });
+    svg.addEventListener('blur', clear);
+    card.api = { show: show, clear: clear, n: n };
+  }
+
+  function renderAll() { Object.keys(charts).forEach(render); }
+
+  /* controls --------------------------------------------------------------- */
+  Array.prototype.forEach.call(document.querySelectorAll('[data-win]'), function (b) {
+    b.addEventListener('click', function () {
+      state.win = b.getAttribute('data-win');
+      Array.prototype.forEach.call(document.querySelectorAll('[data-win]'), function (o) { o.setAttribute('aria-pressed', o === b ? 'true' : 'false'); });
+      renderAll();
+    });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-ser]'), function (b) {
+    b.addEventListener('click', function () {
+      var s = b.getAttribute('data-ser'), on = !state.on[s];
+      if (!on && visible().length === 1) return;
+      state.on[s] = on; b.setAttribute('aria-pressed', on ? 'true' : 'false'); renderAll();
+    });
+  });
+  Object.keys(cards).forEach(function (id) {
+    var c = cards[id];
+    c.btn.addEventListener('click', function () {
+      c.table = !c.table; c.btn.setAttribute('aria-pressed', c.table ? 'true' : 'false'); c.btn.textContent = c.table ? 'View chart' : 'View data'; render(id);
+    });
+    if (window.ResizeObserver) {
+      var last = Math.round(c.wrap.clientWidth), ro = new ResizeObserver(function (entries) {
+        var wd = Math.round(entries[0].contentRect.width); if (wd === last) return; last = wd; if (!c.table) window.requestAnimationFrame(function () { render(id); });
+      });
+      ro.observe(c.wrap);
+    }
+  });
+  document.addEventListener('pointerdown', function (e) {
+    Object.keys(cards).forEach(function (id) { var c = cards[id]; if (c.api && !c.root.contains(e.target)) c.api.clear(); });
+  });
+  renderAll();
+  window.__charts = cards; /* test hook, read-only use */
+})();
+</script>
+</body>
+</html>

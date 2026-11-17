@@ -10,6 +10,7 @@ from wf_support import Runner, REPO, load, raises
 da = load("daily_automation")
 GITATTRIBUTES = os.path.join(REPO, ".gitattributes")
 RULE = "* text=auto eol=lf"
+NOW = __import__("datetime").datetime(2026, 10, 28, 7, 0, 0, tzinfo=__import__("datetime").timezone.utc)   # shortly after the committed report's fetch time
 TODAY = date(2026, 10, 28)                                 # the day after the committed 2026-10-27 report
 KEY_FILES = ["src/fetch_data.py", "reports/report_2026-10-27.md", "reports/report_2026-10-27_data.csv", "src/analysis.py", "src/dashboard.py", "src/run_workflow.py", "requirements.txt", "README.md"]
 PINNED = re.search(r'FETCHER_SHA256 = "([0-9a-f]{64})"', open(os.path.join(REPO, "tests", "test_workflow_integration.py"), encoding="utf-8").read()).group(1)
@@ -33,6 +34,7 @@ sha = lambda data: hashlib.sha256(data).hexdigest()
 crlf = lambda data: data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
 read = lambda folder, rel: open(os.path.join(folder, *rel.split("/")), "rb").read()
 LF_FILES = {rel: read(REPO, rel) for rel in KEY_FILES}      # the files exactly as they are in this working tree
+LF_FILES["reports/report_2026-10-27_manifest.json"] = open(os.path.join(__import__("wf_support").committed_reports(), "report_2026-10-27_manifest.json"), "rb").read()   # the manifest of the committed run (test support: it is not a committed file)
 
 def make_repo(name, files, attributes, autocrlf="false"):
     """A throw-away repository holding `files` (and, if asked, this repository's own .gitattributes), with one commit."""
@@ -48,7 +50,7 @@ def checkout(origin, name, autocrlf):
     destination = os.path.join(WORK, name); git("clone", "-q", "-c", f"core.autocrlf={autocrlf}", origin, destination); return destination
 
 def eol_view(folder): return git("ls-files", "--eol", cwd=folder).decode()
-def validate(checkout_folder): return da.validate_outputs(os.path.join(checkout_folder, "reports"), today=TODAY)
+def validate(checkout_folder): return da.validate_outputs(os.path.join(checkout_folder, "reports"), NOW)
 def in_git_repository(): done = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], cwd=REPO, capture_output=True, text=True); return done.returncode == 0 and done.stdout.strip() == "true"
 
 # ================================================================ the rule itself

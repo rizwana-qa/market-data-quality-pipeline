@@ -9,7 +9,7 @@ from datetime import date
 from wf_support import Runner, REPO, load
 
 da = load("daily_automation")
-REAL_REPORTS = os.path.join(REPO, "reports")
+REAL_REPORTS = __import__("wf_support").committed_reports()
 WORK = tempfile.mkdtemp(prefix="ci_env_"); atexit.register(shutil.rmtree, WORK, True)
 R = Runner("job-summary isolation checks")
 VARIABLES = ("GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT")
@@ -65,7 +65,7 @@ def _():
     files = watched_files("production")
     da.append_summary({"GITHUB_STEP_SUMMARY": files["GITHUB_STEP_SUMMARY"]}, ["### Daily Market Analysis: probe", "- line"]); added = open(files["GITHUB_STEP_SUMMARY"], "rb").read()[len(SENTINEL):]
     assert added == b"### Daily Market Analysis: probe\n- line\n", added
-    with contextlib.redirect_stdout(io.StringIO()): code = da.main(["validate", "--reports-dir", REAL_REPORTS], env={"GITHUB_OUTPUT": files["GITHUB_OUTPUT"]}, now=date(2026, 10, 28))
+    with contextlib.redirect_stdout(io.StringIO()): code = da.main(["validate", "--reports-dir", REAL_REPORTS], env={"GITHUB_OUTPUT": files["GITHUB_OUTPUT"]}, now=__import__("datetime").datetime(2026, 10, 28, 7, 0, 0, tzinfo=__import__("datetime").timezone.utc))
     assert code == 0 and open(files["GITHUB_OUTPUT"], "rb").read()[len(SENTINEL):] == b"analysis_date=2026-10-27\n"
     before = appended(files); da.append_summary({}, ["nothing should happen"]); assert appended(files) == before, "no variable, no write"
 

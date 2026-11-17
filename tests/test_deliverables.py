@@ -22,10 +22,10 @@ atexit.register(shutil.rmtree, WORK, False, _remove)
 TEXT = open(os.path.join(REPO, ".github", "workflows", "daily-market-analysis.yml"), encoding="utf-8", newline="").read()
 GENERATED_AT = datetime(2026, 10, 27, 9, 45, tzinfo=timezone.utc)
 CURRENT, HISTORICAL = "2026-10-26", "2026-03-19"
-NAMES = lambda day: [f"report_{day}.md", f"report_{day}_data.csv", f"dashboard_{day}.html"]
+NAMES = lambda day: [f"report_{day}.md", f"report_{day}_data.csv", f"dashboard_{day}.html", f"market_intelligence_report_{day}.html"]
 
 # ================================================================ (A) the cleanup step
-PATTERNS = ["reports/report_*.md", "reports/report_*_data.csv", "reports/dashboard_*.html"]
+PATTERNS = ["reports/report_*.md", "reports/report_*_data.csv", "reports/report_*_manifest.json", "reports/dashboard_*.html"]
 GENERATED = ["reports/report_2026-10-25.md", "reports/report_2026-10-25_data.csv", "reports/dashboard_2026-10-25.html", "reports/report_2026-10-26.md", "reports/report_2026-10-26_data.csv", "reports/dashboard_2026-10-26.html",
              "reports/report_2026-03-19.md", "reports/report_2026-03-19_data.csv"]
 UNRELATED_IN_REPORTS = ["reports/notes.md", "reports/report_notes.txt", "reports/report_2026-10-26.md.bak", "reports/report_2026-10-26.md.tmp", "reports/report_2026-10-26_data.csv.bak", "reports/dashboard_2026-10-26.html.tmp",
@@ -41,13 +41,13 @@ def step_script(step_id):
     raise AssertionError(f"MISSING FEATURE: the workflow has no step with id {step_id!r}")
 
 def narrow_cleanup_script():
-    """The script of the cleanup step, returned only if it is plain 'rm -f' of exactly the three patterns."""
+    """The script of the cleanup step, returned only if it is plain 'rm -f' of exactly the four patterns."""
     script = step_script("clear_stale_outputs"); commands = [line.strip() for line in script.splitlines() if line.strip() and not line.strip().startswith("#")]
     assert commands, "the cleanup script is empty"
     for line in commands:
         tokens = line.split(); assert tokens[:2] == ["rm", "-f"], f"only 'rm -f' is allowed, found: {line!r}"
-        arguments = [t for t in tokens[2:] if t != "--"]; assert arguments and all(a in PATTERNS for a in arguments), f"arguments other than the three patterns: {line!r}"
-    assert {a for line in commands for a in line.split() if a in PATTERNS} == set(PATTERNS), "all three patterns must be cleaned"
+        arguments = [t for t in tokens[2:] if t != "--"]; assert arguments and all(a in PATTERNS for a in arguments), f"arguments other than the four patterns: {line!r}"
+    assert {a for line in commands for a in line.split() if a in PATTERNS} == set(PATTERNS), "all four patterns must be cleaned"
     code_only = "\n".join(commands)                                          # comments may say what they like; only the commands are judged
     assert not re.search(r"(^|\s)-[A-Za-z]*[rR]", code_only) and "--recursive" not in code_only, "recursive deletion"
     for forbidden in ("find ", "git ", "xargs", "sudo", "$", "`", "..", "~", "|", ";", "&", ">", "<", "\\", "/*", " * "): assert forbidden not in code_only, f"forbidden in the cleanup script: {forbidden!r}"
@@ -124,11 +124,15 @@ def gold():
             reports, out = os.path.join(base, label, "reports"), os.path.join(base, label, "dashboard_out")
             code, _stdout, error = run_main(bodies, now, reports); assert code == 0, f"the fixture run for {label} failed: {error[-200:]}"
             os.makedirs(out); dashboard.generate(reports, generated_at=GENERATED_AT, out_dir=out)
+            interactive = os.path.join(base, label, "interactive_out"); os.makedirs(interactive)                 # the fourth deliverable, built from the same CSV exactly as the workflow builds it
+            day = [name for name in os.listdir(reports) if name.endswith("_data.csv")][0][len("report_"):-len("_data.csv")]
+            code = da.main(["build-interactive-report", "--reports-dir", reports, "--out-dir", os.path.join(base, label, "interactive_tmp"), "--date", day], env={})
+            if code == 0: shutil.move(os.path.join(base, label, "interactive_tmp", f"market_intelligence_report_{day}.html"), os.path.join(interactive, f"market_intelligence_report_{day}.html"))
         _gold["base"] = base
     return _gold["base"]
 def workspace(with_historical=False):
     ws = tempfile.mkdtemp(dir=WORK)
-    for part in ("reports", "dashboard_out"):
+    for part in ("reports", "dashboard_out", "interactive_out"):
         shutil.copytree(os.path.join(gold(), "current", part), os.path.join(ws, part))
         if with_historical: shutil.copytree(os.path.join(gold(), "historical", part), os.path.join(ws, part), dirs_exist_ok=True)
     return ws
@@ -142,7 +146,7 @@ def edit(path, change):
 def stage(ws, day=CURRENT, extra_env=None, out=None):
     """Run the command the way the workflow will. Returns (exit code, stdout + stderr). A 'no such command' answer is reported as the missing feature it is."""
     reports, dash, default_out = paths(ws); out = out or default_out; buffer = io.StringIO()
-    argv = ["stage-deliverables", "--reports-dir", reports, "--dashboard-dir", dash, "--out-dir", out, "--date", day]
+    argv = ["stage-deliverables", "--reports-dir", reports, "--dashboard-dir", dash, "--interactive-dir", os.path.join(ws, "interactive_out"), "--out-dir", out, "--date", day]
     with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
         code = da.main(argv, env=dict(extra_env or {}), now=date(2026, 10, 27))
     text = buffer.getvalue()
@@ -155,7 +159,7 @@ def rejected(ws, mention, day=CURRENT):
     for needle in mention: assert needle.lower() in text.lower(), f"the message does not mention {needle!r}: {text.strip()[-200:]}"
     assert snapshot(reports, dash) == before, "a rejected staging changed its sources"
     assert not os.path.exists(out), f"a partial deliverables folder was left behind: {files_in(out)}"
-    assert set(os.listdir(ws)) <= {"reports", "dashboard_out"}, f"stray entries after a rejection: {sorted(os.listdir(ws))}"
+    assert set(os.listdir(ws)) <= {"reports", "dashboard_out", "interactive_out"}, f"stray entries after a rejection: {sorted(os.listdir(ws))}"
 
 def each_rejected(cases):
     """cases: (label, workspace, words the message must contain, analysis date). Every workspace is ARRANGED first by the caller, so a broken arrangement fails loudly even while the command does not exist yet."""
@@ -173,12 +177,12 @@ def _():
     if code == 2 and "invalid choice" in text: raise AssertionError("MISSING FEATURE: daily_automation.py has no stage-deliverables command yet (argparse: invalid choice)")
     assert code == 0 and all(option in text for option in ("--reports-dir", "--dashboard-dir", "--out-dir", "--date")), text[-300:]
 
-@R.register("success: exactly the three files of the analysis date are staged - report_<date>.md, report_<date>_data.csv, dashboard_<date>.html - byte-identical to their sources; the command creates --out-dir itself")
+@R.register("success: exactly the four files of the analysis date are staged - report_<date>.md, report_<date>_data.csv, dashboard_<date>.html, market_intelligence_report_<date>.html - byte-identical to their sources; the command creates --out-dir itself")
 def _():
     ws = workspace(); reports, dash, out = paths(ws); assert not os.path.exists(out)
     code, text = stage(ws); assert code == 0, text.strip()[-300:]
     assert files_in(out) == sorted(NAMES(CURRENT)) and CURRENT in text, (files_in(out), text.strip()[-200:])
-    for name in NAMES(CURRENT): assert digest(os.path.join(out, name)) == digest(os.path.join(dash if name.startswith("dashboard") else reports, name)), f"{name} differs from its source"
+    for name in NAMES(CURRENT): assert digest(os.path.join(out, name)) == digest(os.path.join(dash if name.startswith("dashboard") else os.path.join(ws, "interactive_out") if name.startswith("market_intelligence") else reports, name)), f"{name} differs from its source"
 
 @R.register("success does not alter its sources: every file in the reports folder and the dashboard folder is byte-identical afterwards")
 def _():
@@ -346,7 +350,7 @@ def _():
     try: code, text = stage(ws)
     finally: da.os.rename = real_rename
     assert code == 1 and "ERROR" in text, (code, text.strip()[-200:])
-    assert not os.path.exists(out) and set(os.listdir(ws)) <= {"reports", "dashboard_out"}, sorted(os.listdir(ws))
+    assert not os.path.exists(out) and set(os.listdir(ws)) <= {"reports", "dashboard_out", "interactive_out"}, sorted(os.listdir(ws))
 
 @R.register("a CSV that ends on another day than the analysis date is rejected for exactly that reason (named: the CSV and the day it really ends on)")
 def _():
@@ -460,10 +464,25 @@ def _():
 def _():
     ws = hostile_header_workspace("\n::error::injected-by-the-csv"); reports, dash, out = paths(ws)
     environment = {k: v for k, v in os.environ.items() if not k.startswith("GITHUB_")}; environment.update(PYTHONDONTWRITEBYTECODE="1", PYTHONUTF8="1")
-    done = subprocess.run([sys.executable, os.path.join(REPO, "src", "daily_automation.py"), "stage-deliverables", "--reports-dir", reports, "--dashboard-dir", dash, "--out-dir", out, "--date", CURRENT],
+    done = subprocess.run([sys.executable, os.path.join(REPO, "src", "daily_automation.py"), "stage-deliverables", "--reports-dir", reports, "--dashboard-dir", dash, "--interactive-dir", os.path.join(ws, "interactive_out"), "--out-dir", out, "--date", CURRENT],
                           capture_output=True, text=True, env=environment, timeout=120)
     assert done.returncode == 1 and done.stdout == "", (done.returncode, done.stdout[:100])
     lines = done.stderr.splitlines(); assert len(lines) == 1 and not any(line.startswith(("::", "##[")) for line in lines) and lines[0].startswith("ERROR: "), lines
     assert not os.path.exists(out)
+
+@R.register("the interactive report is the fourth deliverable: a missing one, a changed one, one built for another day and an empty one are each refused with their own reason, and nothing is staged")
+def _():
+    name = f"market_intelligence_report_{CURRENT}.html"; cases = []
+    ws = workspace(); os.remove(os.path.join(ws, "interactive_out", name)); cases.append(("missing", ws, [name], CURRENT))
+    ws = workspace(); edit(os.path.join(ws, "interactive_out", name), lambda text: text.replace("Market snapshot", "Market snapshot!", 1)); cases.append(("one changed word", ws, [name, "produces"], CURRENT))
+    ws = workspace(); os.rename(os.path.join(ws, "interactive_out", name), os.path.join(ws, "interactive_out", name.replace(CURRENT, "2026-10-25"))); cases.append(("named for another day", ws, [name], CURRENT))
+    ws = workspace(); open(os.path.join(ws, "interactive_out", name), "w").close(); cases.append(("empty", ws, [name], CURRENT))
+    each_rejected(cases)
+
+@R.register("the staged interactive report is exactly what the CSV produces: building it again from the staged CSV gives the same bytes")
+def _():
+    ws = workspace(); reports, dash, out = paths(ws); code, text = stage(ws); assert code == 0, text.strip()[-300:]
+    again = os.path.join(ws, "again"); assert da.main(["build-interactive-report", "--reports-dir", out, "--out-dir", again, "--date", CURRENT], env={}) == 0
+    name = f"market_intelligence_report_{CURRENT}.html"; assert digest(os.path.join(again, name)) == digest(os.path.join(out, name))
 
 R.finish()

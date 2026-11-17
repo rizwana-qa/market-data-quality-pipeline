@@ -5,6 +5,7 @@ Run with: python src/fetch_data.py
 
 import json
 import math
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -25,6 +26,10 @@ MAX_DATES_SHOWN = 10  # keeps long problem lists readable
 MAX_PROBLEMS_SHOWN = 20  # the total is always printed, but details stop after this many
 MAX_TIMESTAMP = 4102444800  # 2100-01-01 UTC; later values cannot be real candles and break date formatting
 PAIRS = ["XBTUSD", "ETHUSD"]  # Kraken calls Bitcoin "XBT"
+# Kraken files the candles of a request under its own name for the pair, not under the name we asked for (checked against the saved real replies).
+# A reply whose candles sit under any other key is refused: it may belong to another asset.
+EXPECTED_RESULT_KEYS = {"XBTUSD": "XXBTZUSD", "ETHUSD": "XETHZUSD"}
+NUMBER_TEXT = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")  # plain decimal text; float() alone also accepts "1_000", " 5" and non-ASCII digits
 
 # Kraken's OHLC candle layout: [time, open, high, low, close, vwap, volume, count]
 EXPECTED_FIELDS_PER_CANDLE = 8
@@ -32,6 +37,8 @@ EXPECTED_FIELDS_PER_CANDLE = 8
 
 def _to_finite_float(value, field_name, row_number):
     """Convert one Kraken string such as "67123.4" into a float, or raise a clear error."""
+    if isinstance(value, bool):  # float(True) is 1.0, so a JSON true or false would otherwise become a price
+        raise ValueError(f"Candle {row_number}: '{field_name}' is a boolean, not a number: {value!r}")
     if value is None or value == "":
         raise ValueError(f"Candle {row_number}: '{field_name}' is missing")
     try:
@@ -40,6 +47,8 @@ def _to_finite_float(value, field_name, row_number):
         raise ValueError(f"Candle {row_number}: '{field_name}' is not a number: {value!r}")
     if not math.isfinite(number):  # float() accepts "nan" and "inf", which are not real prices
         raise ValueError(f"Candle {row_number}: '{field_name}' is not finite: {value!r}")
+    if isinstance(value, str) and not NUMBER_TEXT.fullmatch(value):
+        raise ValueError(f"Candle {row_number}: '{field_name}' is not a number: {value!r}")
     if number < 0:
         raise ValueError(f"Candle {row_number}: '{field_name}' is negative: {value!r}")
     return number
@@ -142,6 +151,11 @@ def extract_raw_candles(body, pair):
     candle_keys = [key for key in body["result"] if key != "last"]
     if len(candle_keys) != 1:
         raise RuntimeError(f"{pair}: expected exactly one pair key in result, found {candle_keys}")
+    expected_key = EXPECTED_RESULT_KEYS.get(pair)
+    if expected_key is None:
+        raise RuntimeError(f"{pair}: no verified Kraken result key is known for this pair")
+    if candle_keys[0] != expected_key:
+        raise RuntimeError(f"{pair}: unexpected pair key {candle_keys[0]!r} in result, expected {expected_key!r} (the reply may belong to another asset)")
     raw_candles = body["result"][candle_keys[0]]
     if not isinstance(raw_candles, list) or not raw_candles:
         raise RuntimeError(f"{pair}: no candles returned under '{candle_keys[0]}'")

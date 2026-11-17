@@ -2,12 +2,14 @@
 
 Usage: python src/run_workflow.py
 
-Writes reports/report_<last completed UTC date>.md and reports/report_<date>_data.csv (17 columns: date, both closes and
+Writes reports/report_<last completed UTC date>.md, reports/report_<date>_data.csv and, last, reports/report_<date>_manifest.json (the CSV has 17 columns: date, both closes and
 returns, then open, high, low, volume, VWAP and trade count for Bitcoin and for Ethereum; returns are fractions, 0.01 = 1%).
+Before any calculation the candles of the 31 analysed days are checked for plausibility (see check_candle_plausibility); on any problem nothing is written.
 Exit code 0: both files were written (an old copy that could not be deleted, *.bak, only causes a warning).
 Exit code 1: something failed and the old files were put back; if putting them back also fails, the old copies stay as *.bak files.
 """
 
+import argparse
 import csv
 import io
 import os
@@ -16,7 +18,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import analysis
+import candle_rules
+import run_evidence
 from fetch_data import (
+    EXPECTED_RESULT_KEYS,
     PAIRS,
     check_pair_alignment,
     fetch_daily_candles,
@@ -162,6 +167,40 @@ def candles_for_dates(candles, timestamps):
     return [candle_by_date[timestamp] for timestamp in timestamps]
 
 
+PRICE_FIELDS = ("open", "high", "low", "close")
+SAME_DATA_FIELDS = ("open", "high", "low", "close", "volume", "trade_count")
+ASSET_OF_PAIR = {"XBTUSD": "BTC", "ETHUSD": "ETH"}
+is_number = candle_rules.is_number
+
+
+def judge_window(candles_by_pair, window_dates):
+    """Judge the candles that the analysis will actually use with the shared rules (candle_rules.py). Returns (ledger, problems).
+
+    Only the exact window dates are judged, for every pair; an older candle outside the window can not stop the run. The ledger plans every (rule, asset, date, field)
+    instance first and counts the results against that plan. `problems` (an empty list means all is well) holds one message per FAIL or INCONCLUSIVE result:
+    open, high, low and close are finite and positive; high is not below low, and open and close lie between low and high (inclusive, no tolerance);
+    volume is finite and not negative (zero volume is valid); the trade count is a whole number that is not negative; the VWAP follows the rules in candle_rules.py
+    (project assumptions A1 and A2; positive volume with no trades is inconclusive and blocks the run). A candle whose prices are not usable numbers is reported
+    once and not compared any further.
+
+    Across the pairs: if every field in SAME_DATA_FIELDS is identical on every window day, the same reply was most likely served for both pairs.
+    This is a heuristic against cross-wired data, not a market law: it can not detect near-identical or merely suspicious series, and it only
+    judges the window as a whole (a single different value is enough to pass).
+    """
+    windows, pair_of = {}, {}
+    for pair, candles in candles_by_pair.items():
+        asset = ASSET_OF_PAIR.get(pair, pair)
+        pair_of[asset] = pair
+        windows[asset] = [(format_utc_date(candle["timestamp"]), candle) for candle in candles_for_dates(candles, window_dates)]
+    ledger, ordered = candle_rules.evaluate_window(windows, where_of=lambda asset, date: f"{pair_of[asset]} {date}")
+    return ledger, candle_rules.problems_of(ordered)
+
+
+def check_candle_plausibility(candles_by_pair, window_dates):
+    """Return a list of problems (an empty list means all is well) in the candles that the analysis will actually use. See judge_window."""
+    return judge_window(candles_by_pair, window_dates)[1]
+
+
 def market_columns(candle):
     """The six market fields of one candle, in CSV order (the close is already in an earlier column)."""
     return [repr(candle["open"]), repr(candle["high"]), repr(candle["low"]), repr(candle["volume"]), repr(candle["vwap"]), str(candle["trade_count"])]
@@ -230,58 +269,134 @@ def write_outputs(report_dir, files):
             temporary = report_dir / (name + ".tmp")
             staged.append((temporary, report_dir / name))
             temporary.write_text(text, encoding="utf-8", newline="\n")
+            if temporary.read_bytes() != text.encode("utf-8"):          # what was staged must be exactly what was meant to be written (and hashed), before any real file is touched
+                raise OSError(f"{temporary.name} does not match what was written to it")
         return replace_with_rollback(staged)
     finally:
         for temporary, _ in staged:
             temporary.unlink(missing_ok=True)
 
 
-def main(report_dir=None):
+def main(report_dir=None, run_id=None, run_attempt=None, diagnostics_dir=None):
+    """Fetch, validate, analyse and write the report, the CSV and (last) the manifest. Returns the exit code.
+
+    `now` is read ONCE here: it decides which candles are completed, it is the 'Data fetched' time, and the analysis date is the last completed day. Nothing downstream
+    recalculates it; the manifest carries it. `run_id` and `run_attempt` are passed explicitly (CI: GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT); without them the run gets a unique local
+    identity. If `diagnostics_dir` is given, the validation envelope of a blocked run is written there (best effort: a failure to write it is a warning and never changes the outcome).
+    """
     report_dir = Path(report_dir) if report_dir else DEFAULT_REPORT_DIR
     now = datetime.now(timezone.utc)
+    try:
+        identity = run_evidence.resolve_identity(run_id, run_attempt, now)
+    except ValueError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    source = run_evidence.SourceLedger([ASSET_OF_PAIR[pair] for pair in PAIRS])
+    candle_summary = {"value": run_evidence.empty_candle_summary()}
+
+    def stop(reason):
+        """The run is blocked: persist the envelope (best effort), keep the original failure primary, return the exit code."""
+        envelope = run_evidence.build_envelope(identity, now, source.summary(), candle_summary["value"])
+        warning = run_evidence.write_diagnostic(diagnostics_dir, identity, now, reason, envelope)
+        if warning:
+            print(f"WARNING: the validation diagnostic was not persisted ({warning})", file=sys.stderr)
+        return 1
+
     completed_by_pair = {}
+    pair_info = []
     excluded_dates = set()
     problems = []
 
     for pair in PAIRS:
+        asset = ASSET_OF_PAIR[pair]
         try:
             candles = fetch_daily_candles(pair)
-        except (RuntimeError, ValueError) as error:
+        except RuntimeError as error:
             print(f"ERROR: {error}", file=sys.stderr)
-            return 1
-        completed, unfinished, pair_problems = validate_pair(pair, candles, now)
+            source.failed(asset, "FET-RESP", str(error))
+            return stop(f"{pair}: {error}")
+        except ValueError as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            source.passed(asset, "FET-RESP", "the response had the expected structure and pair key")
+            source.failed(asset, "FET-PARSE", str(error))
+            return stop(f"{pair}: {error}")
+        source.passed(asset, "FET-RESP", f"{len(candles)} candles received under the expected pair key")
+        source.passed(asset, "FET-PARSE", f"{len(candles)} candles parsed with strict numeric checks")
+        completed, unfinished, history_problems = validate_pair(pair, candles, now)
+        unfinished_problems = []
+        if len(unfinished) > 1:                                 # the day in progress has one candle; a second one is a duplicate that would otherwise vanish silently
+            unfinished_problems.append(f"{pair}: {len(unfinished)} unfinished candles for today's UTC day {format_utc_date(unfinished[0]['timestamp'])}; at most one is expected")
+        pair_problems = history_problems + unfinished_problems
+        if history_problems:
+            source.failed(asset, "FET-VALID", "; ".join(history_problems))
+        else:
+            source.passed(asset, "FET-VALID", f"{len(completed)} completed candles; timestamps checked")
+        if unfinished_problems:
+            source.failed(asset, "RUN-UNFIN", "; ".join(unfinished_problems))
+        else:
+            source.passed(asset, "RUN-UNFIN", f"{len(unfinished)} unfinished candle(s)")
         completed_by_pair[pair] = completed
+        pair_info.append({"pair": pair, "asset": asset, "expected_key": EXPECTED_RESULT_KEYS[pair], "received_candles": len(candles), "completed_candles": len(completed),
+                          "unfinished_candles": len(unfinished), "window_candles": 0})
         excluded_dates |= {format_utc_date(candle["timestamp"]) for candle in unfinished}
         problems += pair_problems
         print_pair_summary(pair, candles, completed, unfinished, pair_problems)
 
     first_pair, second_pair = PAIRS
-    problems += check_pair_alignment(first_pair, completed_by_pair[first_pair], second_pair, completed_by_pair[second_pair])
+    alignment_problems = check_pair_alignment(first_pair, completed_by_pair[first_pair], second_pair, completed_by_pair[second_pair])
+    source.alignment(alignment_problems)
+    problems += alignment_problems
     if problems:
         print_validation_failures(problems)
-        return 1
+        return stop(f"{len(problems)} validation problem(s) in the fetched data")
 
     try:
         timestamps, btc_closes, eth_closes = analysis.select_aligned_closes(completed_by_pair[first_pair], completed_by_pair[second_pair])
+        ledger, window_problems = judge_window(completed_by_pair, timestamps)      # the exact days analysed, before any calculation
+        candle_summary["value"] = ledger.summary()
+        if window_problems:
+            print_validation_failures(window_problems)
+            return stop(f"{len(window_problems)} candle problem(s) in the analysed window")
         results = analysis.analyse(timestamps, btc_closes, eth_closes)
         btc_candles = candles_for_dates(completed_by_pair[first_pair], timestamps)
         eth_candles = candles_for_dates(completed_by_pair[second_pair], timestamps)
         last_date = format_utc_date(timestamps[-1])
-        files = [
-            (f"report_{last_date}.md", build_report(results, now, sorted(excluded_dates))),
-            (f"report_{last_date}_data.csv", build_csv(results, btc_candles, eth_candles)),
-        ]
+        envelope = run_evidence.build_envelope(identity, now, source.summary(), candle_summary["value"])
+        if envelope["overall"] != "PASS":                           # defensive: nothing is written unless the producer's own evidence is a complete PASS
+            print(f"ERROR: the validation evidence is not a complete PASS ({envelope['overall']}); nothing was written", file=sys.stderr)
+            return stop("the validation evidence is not a complete PASS")
+        report_text, csv_text = build_report(results, now, sorted(excluded_dates)), build_csv(results, btc_candles, eth_candles)
+        report_name, csv_name = f"report_{last_date}.md", f"report_{last_date}_data.csv"
+        for info in pair_info:
+            info["window_candles"] = len(timestamps)
+        manifest = run_evidence.build_manifest(
+            identity, now, last_date,
+            {"close": {"first": format_utc_date(timestamps[0]), "last": last_date, "count": len(timestamps)},
+             "return": {"first": format_utc_date(results["return_dates"][0]), "last": last_date, "count": len(results["return_dates"])}},
+            pair_info, envelope, [("csv", csv_name, csv_text.encode("utf-8")), ("report", report_name, report_text.encode("utf-8"))], SOURCE_URL)
+        files = [(report_name, report_text), (csv_name, csv_text), (run_evidence.MANIFEST_NAME.format(date=last_date), run_evidence.serialize(manifest))]    # the manifest is last
         leftover_backups = write_outputs(report_dir, files)
     except (ValueError, OSError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
-        return 1
+        return stop(str(error))
 
     for backup in leftover_backups:
         print(f"WARNING: could not delete the old copy {backup}; it can be deleted by hand", file=sys.stderr)
     print(f"\nReport written: {report_dir / files[0][0]}")
     print(f"Data written:   {report_dir / files[1][0]}")
+    print(f"Manifest written: {report_dir / files[2][0]}")
     return 0
 
 
+def parse_arguments(argv=None):
+    parser = argparse.ArgumentParser(description="Fetch, validate, analyse and write the daily BTC/ETH report, its CSV and its manifest.")
+    parser.add_argument("--report-dir", default=None, help="folder for the outputs (default: the project's reports folder)")
+    parser.add_argument("--run-id", default=None, help="the run id (CI: GITHUB_RUN_ID); without it a unique local id is generated")
+    parser.add_argument("--run-attempt", default=None, help="the run attempt (CI: GITHUB_RUN_ATTEMPT); needs --run-id")
+    parser.add_argument("--diagnostics-dir", default=None, help="if given, the validation envelope of a blocked run is written there (best effort)")
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    arguments = parse_arguments()
+    sys.exit(main(arguments.report_dir, run_id=arguments.run_id, run_attempt=arguments.run_attempt, diagnostics_dir=arguments.diagnostics_dir))

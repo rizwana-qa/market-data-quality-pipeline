@@ -33,8 +33,9 @@ RAW = {"btc": raw_window("XBTUSD"), "eth": raw_window("ETHUSD")}
 date_of = lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
 
 def rich_rows(base, closes, days):
-    """Every field of every day differs from every other field, day and asset, so a swapped or shifted column shows up."""
-    return [[ts, f"{base + i}.11", f"{base + 5000 + i}.22", f"{base + 9000 + i}.33", str(c), f"{base + 2 * i}.44", f"{base // 10 + i}.55555555", base * 3 + i] for i, (ts, c) in enumerate(zip(days, closes))]
+    """Every field of every day differs from every other field, day and asset, so a swapped or shifted column shows up.
+    The open, high and low are derived from the close so that low <= open, close <= high, and the vwap inside low and high: the workflow now rejects candles that break those relations."""
+    return [[ts, f"{c * 1.0011:.2f}", f"{c * 1.0222:.2f}", f"{c * 0.9833:.2f}", str(c), f"{c * 1.0044:.2f}", f"{base // 10 + i}.55555555", base * 3 + i] for i, (ts, c) in enumerate(zip(days, closes))]
 def rich_bodies(count=40, seed=11):
     btc = random_closes(count, seed); eth = random_closes(count, seed + 1, correlated_with=btc)
     days = [midnight(TODAY) - (count - i) * DAY for i in range(count)]
@@ -130,16 +131,18 @@ def _():
 @check("mapping by DATE not position: with 40 completed days, row 0 uses the candle of the 10th day (offset 9), and the unfinished candle's values (999999/888888) never appear")
 def _():
     text = rich_run()[1]; rows = split_rows(text)[1:]
-    assert rows[0][5] == repr(float(f"{1000 + 9}.11")) and rows[0][11] == repr(float(f"{7000 + 9}.11")) and "999999" not in text and "888888" not in text
+    first_btc, first_eth = RICH_WINDOW["btc"][0], RICH_WINDOW["eth"][0]               # the 10th of the 40 completed days (offset 9): the first of the last 31
+    assert rows[0][0] == date_of(first_btc[0]) and rows[0][5] == repr(float(first_btc[1])) and rows[0][11] == repr(float(first_eth[1])) and "999999" not in text and "888888" not in text
+    assert first_btc[0] == midnight(TODAY) - 31 * DAY and first_btc[5] == f"{float(first_btc[4]) * 1.0044:.2f}"
 
 # ================================================================ unchanged report and behaviour
 @check("regression: the report text is byte-for-byte identical to the one the ORIGINAL implementation wrote (real replies)")
 def _(): assert real_run()[0] == old_run(REAL, REAL_NOW, "report_2026-10-26")[0]
 @check("regression: the report text is byte-for-byte identical to the original's for the synthetic data too")
 def _(): assert rich_run()[0] == old_run(RICH, NOW, "report_2026-03-19")[0]
-@check("regression: the CSV and the report are still the only two files written, with the original names")
+@check("regression: the CSV and the report keep their original names; the manifest is the only other file written, beside them")
 def _():
-    d = fresh(); assert run_module(run_workflow, REAL, REAL_NOW, d)[0] == 0 and files_in(d) == ["report_2026-10-26.md", "report_2026-10-26_data.csv"]
+    d = fresh(); assert run_module(run_workflow, REAL, REAL_NOW, d)[0] == 0 and files_in(d) == ["report_2026-10-26.md", "report_2026-10-26_data.csv", "report_2026-10-26_manifest.json"]
 @check("misaligned dates [existing behaviour]: a missing BTC day -> exit 1, VALIDATION FAILED, nothing written")
 def _():
     bodies = synthetic_bodies(drop_btc_day=20)[0]; d = fresh(); code, out, err = run_module(run_workflow, bodies, NOW, d); assert code == 1 and "VALIDATION FAILED" in err and files_in(d) == [], (code, err[:200], files_in(d))

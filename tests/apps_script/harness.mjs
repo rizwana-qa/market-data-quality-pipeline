@@ -8,7 +8,7 @@ import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-export const SOURCE_PATH = path.join(HERE, "..", "..", "apps_script", "Code.gs");
+export const SOURCE_PATH = process.env.CODE_GS_UNDER_TEST ? path.resolve(process.env.CODE_GS_UNDER_TEST) : path.join(HERE, "..", "..", "apps_script", "Code.gs");   // the override runs the same checks against another copy of the script (for example the previous version)
 export const HEADERS = ["Run date", "Asset", "Closing price", "Daily return", "30-day volatility", "30-day drawdown", "Correlation", "Validation status", "Report status", "Workflow run ID"];
 export const SECRET = "unit-test-shared-secret-0123456789";
 export const WORKFLOW_URL = "https://github.com/rizwana-qa/market-data-quality-pipeline/actions/runs/123456789";
