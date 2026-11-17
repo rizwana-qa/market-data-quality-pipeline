@@ -36,7 +36,11 @@ check("legacy: neither field -> an HTML e-mail with the unchanged deliverables w
 check("legacy: the e-mail of a request without link fields is byte for byte the e-mail the script sent before this feature (SHA-256 of the HTML and of the plain text, subject, 3 inline charts)", () => {
   const { w } = send({}); const m = w.state.mail.sent[0]; const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
   assert.equal(m.subject, "Daily Market Analysis OK - 2026-10-27"); assert.equal(Object.keys(m.inlineImages).length, 3);
-  assert.equal(sha(html(m)), "2b65cdd4c17b177a9b2559469e3717f85bcfffaef270b10e3cbbc75378c39b01"); assert.equal(sha(text(m)), "a262b2eef3e559a8c042f9f289cb1184cdd3be58a8b2e3aeb041cc09982892c0");
+  // the only later change is the data-freshness line (the validated fetch time); with exactly that line removed the e-mail is the pinned original
+  const fresh = /<p style="[^"]*">Data fetched from Kraken \(UTC\): <strong style="color:#ffffff;">[^<]*<\/strong><\/p>/;
+  assert.ok(fresh.test(html(m))); assert.ok(text(m).includes("\n\nData fetched from Kraken (UTC): 2026-10-28 02:15:12 UTC"));
+  assert.equal(sha(html(m).replace(fresh, "")), "2b65cdd4c17b177a9b2559469e3717f85bcfffaef270b10e3cbbc75378c39b01");
+  assert.equal(sha(text(m).replace("\n\nData fetched from Kraken (UTC): 2026-10-28 02:15:12 UTC", "")), "a262b2eef3e559a8c042f9f289cb1184cdd3be58a8b2e3aeb041cc09982892c0");
 });
 
 // ---- verified link

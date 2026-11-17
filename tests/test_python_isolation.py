@@ -598,6 +598,7 @@ def _():
         "upsert_analysis",
         "verify_analysis",
         "send_success_email",
+        "self_check",                      # the read-only capability read at send time (report_ohlc_supported / report_link_supported)
         "send_success_report",
         "self_check",
         "notify_failure",

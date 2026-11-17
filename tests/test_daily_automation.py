@@ -919,7 +919,7 @@ def _():
     out = prepared_dir(); assert sorted(os.listdir(out)) == ["run_context.json", "send_success_email.json", "send_success_report.json", "upsert_analysis.json", "verify_analysis.json"], sorted(os.listdir(out))
     body, email = read_json(out, "send_success_report.json"), read_json(out, "send_success_email.json")
     assert body["action"] == "send_success_report" and set(body) == set(email) | {"report"} and all(body[key] == email[key] for key in email if key != "action") and "token" not in body and "artifact_url" not in body and "sheet_update" not in body
-    assert set(body["report"]) == {"meta", "assets", "pair", "coverage", "charts", "comparison", "validation"} and len(body["report"]["charts"]) == 3 and len(body["report"]["coverage"]) == 17
+    assert set(body["report"]) == {"meta", "assets", "pair", "coverage", "charts", "comparison", "validation", "ohlc"} and len(body["report"]["charts"]) == 3 and len(body["report"]["coverage"]) == 17
     text = open(os.path.join(out, "send_success_report.json"), encoding="utf-8").read(); assert len(json.dumps(body)) + 400 < 19000, len(json.dumps(body)); assert "NaN" not in text and "Infinity" not in text
 
 @R.register("report build-payload: the generation time stamp is the real UTC time in the report's own format (replaceable in tests)")
@@ -946,7 +946,8 @@ def _():
 def _():
     model = ReportModel()
     with served(model) as server:
-        out = verified_dir(server); summary = os.path.join(new_temp_dir(), "summary.md"); code, stdout, stderr = post_report(server, out, summary=summary); assert code == 0, (stdout, stderr)
+        out = verified_dir(server); model.self_check_reply = self_reply(report_ohlc_supported=True)       # an updated web app: the whole stored report goes out, ohlc included
+        summary = os.path.join(new_temp_dir(), "summary.md"); code, stdout, stderr = post_report(server, out, summary=summary); assert code == 0, (stdout, stderr)
         assert len(model.requests) == 1 and set(model.requests[0]) == REPORT_KEYS, set(model.requests[0]) ^ REPORT_KEYS
         sent, stored = model.requests[0], read_json(out, "send_success_report.json")
         assert sent["token"] == TOKEN and sent["artifact_url"] == ARTIFACT_URL and sent["sheet_update"] == {"rows_inserted": 2, "rows_updated": 0} and sent["report"] == stored["report"] and sent["summary"] == stored["summary"]
@@ -1232,7 +1233,54 @@ def _():
     model = LinkModel()
     with link_server(model, self_reply(report_link_supported=True)) as server:
         out = verified_dir(server); before = len(model.self_check_requests); code, text, err = post_with_link(server, out, None); assert code == 0, (text, err)
-        assert set(model.link_requests[-1]) == REPORT_KEYS and len(model.self_check_requests) == before, "without --report-link the request is the legacy one and no extra self_check is made"
+        assert set(model.link_requests[-1]) == REPORT_KEYS and len(model.self_check_requests) == before + 1, "without --report-link the request has the legacy keys; the single self_check at send time only reads the capability flags (for the optional ohlc part)"
+
+# ---- the optional market snapshot part (report.ohlc) and the capability report_ohlc_supported
+def ohlc_post(reply, link=None):
+    model = LinkModel()
+    with link_server(model, self_reply()) as server:
+        out = verified_dir(server); model.self_check_reply = reply            # the preflight passed with a normal answer; the answer at send time is the one under test
+        code, text, err = post_with_link(server, out, link)
+    return model, code, text, err
+
+@R.register("self-check capability: clean_self_check keeps report_ohlc_supported ONLY as a real boolean; every other value is dropped and never rejects the reply, and the other flags are unaffected")
+def _():
+    base = self_reply()
+    for name, change, expected in (("true", {"report_ohlc_supported": True}, True), ("false", {"report_ohlc_supported": False}, False), ("absent", {}, None), ("string true", {"report_ohlc_supported": "true"}, None),
+                                   ("number", {"report_ohlc_supported": 1}, None), ("null", {"report_ohlc_supported": None}, None), ("list", {"report_ohlc_supported": [True]}, None)):
+        cleaned = da.clean_self_check(dict(base, **change), 1)
+        assert cleaned.get("report_ohlc_supported") == expected and ("report_ohlc_supported" in cleaned) == (expected is not None), (name, cleaned)
+        assert cleaned["report_evidence_supported"] is True and cleaned["success"] is True and cleaned["headers_ok"] is True, (name, cleaned)
+    assert da.clean_self_check(dict(base, report_ohlc_supported=True, report_link_supported=False), 1)["report_link_supported"] is False
+
+@R.register("ohlc: the market snapshot is sent ONLY when the web app answers self_check with report_ohlc_supported exactly true; it equals the CSV's last row, and every other request key and report part is unchanged")
+def _():
+    import csv
+    with open(os.path.join(REPO, "reports", "report_2026-10-27_data.csv"), encoding="utf-8", newline="") as handle: last = list(csv.DictReader(handle))[-1]
+    model, code, text, err = ohlc_post(self_reply(report_ohlc_supported=True)); assert code == 0, (text, err)
+    sent = model.link_requests[-1]; assert set(sent) == REPORT_KEYS and "ohlc" in sent["report"], sorted(sent["report"])
+    ohlc = sent["report"]["ohlc"]; assert ohlc["date"] == last["date"] == sent["analysis_date"]
+    for asset in ("btc", "eth"):
+        for name in ("open", "high", "low", "close"): assert ohlc[asset][name] == float(last[f"{asset}_{name}"]), (asset, name)
+    assert "ohlc" not in err
+    stripped = {key: value for key, value in sent["report"].items() if key != "ohlc"}
+    model2, code, text, err = ohlc_post(self_reply(report_ohlc_supported=False)); assert code == 0 and "ohlc" not in model2.link_requests[-1]["report"]
+    assert set(model2.link_requests[-1]["report"]) == set(stripped), "only the ohlc part is absent for an older web app"
+
+@R.register("ohlc: with the capability absent, false or not a boolean, or no self_check answer, the ohlc part is removed, a notice says so, and the e-mail is still sent")
+def _():
+    for name, reply in (("absent", self_reply()), ("false", self_reply(report_ohlc_supported=False)), ("string", self_reply(report_ohlc_supported="true")), ("number", self_reply(report_ohlc_supported=1)),
+                        ("null", self_reply(report_ohlc_supported=None)), ("down", {"success": False, "error": "UNAUTHORIZED"})):
+        for link in (None, "verified"):
+            model, code, text, err = ohlc_post(reply, link)
+            assert code == 0 and "ohlc" not in model.link_requests[-1]["report"] and "NOTICE" in err and "report_ohlc_supported" in err and model.mail, (name, link, code, err[-300:])
+
+@R.register("ohlc: without_unsupported_parts leaves a payload without the part, other parts and other keys alone, and never mutates its input")
+def _():
+    payload = {"action": "send_success_report", "report": {"meta": {}, "ohlc": {"date": "2026-10-27"}, "comparison": {"x": 1}}}
+    kept = da.without_unsupported_parts(payload, {da.OHLC_CAPABILITY_FLAG: True}); assert kept == payload
+    cut = da.without_unsupported_parts(payload, {}); assert "ohlc" not in cut["report"] and cut["report"]["comparison"] == {"x": 1} and "ohlc" in payload["report"], "input must not change"
+    plain = {"action": "send_success_report", "report": {"meta": {}}}; assert da.without_unsupported_parts(plain, {}) == plain
 
 @R.register("report link: with the capability absent, false or not a boolean, and against a strict older web app, NO link field is sent, the notice says so and the e-mail is still sent with the artifact link")
 def _():

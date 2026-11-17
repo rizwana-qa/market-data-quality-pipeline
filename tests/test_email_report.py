@@ -309,5 +309,57 @@ def _():
     const = lambda name: float(re.search(rf"^{name} = ([0-9.]+)", an, re.M).group(1))
     assert [float(x) for x in found.groups()] == [const("CORRELATION_WEAK_BELOW"), const("CORRELATION_STRONG_FROM"), const("VOLATILITY_RATIO_HIGH"), const("VOLATILITY_RATIO_LOW"), const("DOWN_DAY_OVERLAP_HIGH"), const("DOWN_DAY_OVERLAP_LOW")], found.groups()
 
+# ================================================================ the market snapshot (OHLC) and the fetch time
+@R.register("report ohlc: Open, High, Low, Close of BTC and ETH equal the last row of the source CSV read independently with the csv module (same date, no calculation, no rounding)")
+def _():
+    import csv
+    with open(os.path.join(REAL_REPORTS, "report_2026-10-27_data.csv"), encoding="utf-8", newline="") as handle: last = list(csv.DictReader(handle))[-1]
+    got = report()["ohlc"]
+    assert set(got) == {"date", "btc", "eth"} and got["date"] == last["date"] == "2026-10-27" == outputs()["dataset"]["dates"][-1], got
+    for asset in ("btc", "eth"):
+        assert set(got[asset]) == {"open", "high", "low", "close"}, got[asset]
+        for name in ("open", "high", "low", "close"): assert got[asset][name] == float(last[f"{asset}_{name}"]) and isinstance(got[asset][name], float), (asset, name)
+    assert (got["btc"]["open"], got["btc"]["high"], got["btc"]["low"], got["btc"]["close"]) == (80001.8, 81199.7, 79378.5, 80800.9)
+    assert (got["eth"]["open"], got["eth"]["high"], got["eth"]["low"], got["eth"]["close"]) == (2320.46, 2361.69, 2294.34, 2347.34)
+    assert got["btc"]["close"] == outputs()["dataset"]["closes"]["BTC"][-1] and got["eth"]["close"] == outputs()["dataset"]["closes"]["ETH"][-1]
+
+@R.register("report meta.data_fetched is the pipeline's own 'Data fetched' time of the committed report (2026-10-28 06:56:33 UTC), not the generation time and not the clock")
+def _():
+    text = open(os.path.join(REAL_REPORTS, "report_2026-10-27.md"), encoding="utf-8").read(); line = re.search(r"^- Data fetched: (.+)$", text, re.M).group(1)
+    meta = report()["meta"]; assert line == "2026-10-28 06:56:33 UTC" == meta["data_fetched"] and meta["generated_at"] != meta["data_fetched"], (line, meta)
+    other = er.build_report(outputs(), datetime(2026, 10, 29, 9, 9, 9, tzinfo=timezone.utc)); assert other["meta"]["data_fetched"] == line and other["ohlc"] == report()["ohlc"]
+
+@R.register("check_report refuses a bad ohlc part (wrong or missing keys, non-numbers, non-positive or non-finite values, low above open/close, high below open/close, bad date) and accepts the real one")
+def _():
+    import copy
+    good = report(); er.check_report(good)
+    def broken(change):
+        candidate = copy.deepcopy(good); change(candidate["ohlc"]); return candidate
+    def inf(o): o["btc"]["high"] = float("inf")
+    def nan(o): o["eth"]["low"] = float("nan")
+    def drop(o): del o["eth"]
+    def extra(o): o["btc"]["volume"] = 1.0
+    def missing(o): del o["btc"]["low"]
+    def text(o): o["btc"]["open"] = "80000"
+    def boolean(o): o["btc"]["open"] = True
+    def zero(o): o["eth"]["low"] = 0.0
+    def negative(o): o["eth"]["open"] = -1.0
+    def low_high(o): o["btc"]["low"] = o["btc"]["high"] + 1
+    def open_over(o): o["eth"]["open"] = o["eth"]["high"] + 1
+    def close_under(o): o["eth"]["close"] = o["eth"]["low"] - 1
+    def date_bad(o): o["date"] = "2026-02-30"
+    def date_text(o): o["date"] = "yesterday"
+    def top_extra(o): o["source"] = "x"
+    for change in (inf, nan, drop, extra, missing, text, boolean, zero, negative, low_high, open_over, close_under, date_bad, date_text, top_extra):
+        try: er.check_report(broken(change))
+        except er.EmailReportError: continue
+        raise AssertionError(f"{change.__name__} was accepted")
+    older = copy.deepcopy(good); del older["ohlc"]; er.check_report(older)          # a report without the part (an older script) is still valid
+
+@R.register("the report with ohlc stays within the request size budget and is still valid JSON of plain numbers")
+def _():
+    body = json.dumps(report(), separators=(",", ":")); assert json.loads(body)["ohlc"] == report()["ohlc"]
+    assert len(body) <= er.MAX_REPORT_CHARS, (len(body), er.MAX_REPORT_CHARS)
+
 
 R.finish()

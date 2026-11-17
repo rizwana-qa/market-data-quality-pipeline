@@ -117,7 +117,7 @@ PAGES_REQUEST_TIMEOUT = 15
 MAX_PAGES_REPORT_BYTES = 4 * 1024 * 1024
 MAX_INTERACTIVE_REPORT_BYTES = 2 * 1024 * 1024                    # the approved report is about 58 KB
 REPORT_PARTS = {"meta", "assets", "pair", "coverage", "charts"}
-REPORT_OPTIONAL_PARTS = {"comparison", "validation"}               # sent by this client; an older client sends neither, and the web app accepts both shapes
+REPORT_OPTIONAL_PARTS = {"comparison", "validation", "ohlc"}               # sent by this client; an older client sends neither, and the web app accepts both shapes
 REPORT_CHART_IDS = ["indexed", "returns", "drawdown"]
 MAX_CHART_BYTES = 6000
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -483,6 +483,7 @@ def _post_once(url, body):
 
 
 CAPABILITY_FLAG = "report_evidence_supported"       # set by an updated Code.gs in its self_check reply; an older deployed script does not send it
+OHLC_CAPABILITY_FLAG = "report_ohlc_supported"       # set only by a Code.gs that accepts the optional 'ohlc' part of the report; the part is removed from the request for any other web app
 LINK_CAPABILITY_FLAG = "report_link_supported"      # a separate flag: set only by a Code.gs that accepts report_url / report_link_status; it never replaces the evidence flag above
 
 
@@ -501,19 +502,33 @@ def preflight_web_app(url, token):
         raise AutomationError("the deployed Apps Script does not support the evidence-backed report this run sends (deploy the updated Code.gs first); the sheet was not touched", attempts=attempts, delivery="not_sent")
 
 
-def report_link_supported(url, token):
-    """True only if the deployed web app answers a normal read-only self_check with report_link_supported exactly true. A missing, false or non-boolean flag, an error answer or no answer at all
-    is False, and the success report is then sent without the link fields (an older web app refuses unknown fields)."""
+def web_app_flags(url, token):
+    """The capability flags of the deployed web app from ONE normal read-only self_check (no row written, no e-mail sent). An error answer or no answer at all gives {}: no capability is then assumed."""
     try:
         reply, attempts = post_action(url, {"action": "self_check", "expected_sheet_name": EXPECTED_SHEET_NAME}, token)
     except AutomationError:
-        return False
-    return clean_self_check(reply, attempts).get(LINK_CAPABILITY_FLAG) is True
+        return {}
+    return clean_self_check(reply, attempts)
 
 
-def with_report_link(payload, state, url, token):
+def report_link_supported(url, token):
+    """True only if the deployed web app answers a normal read-only self_check with report_link_supported exactly true. A missing, false or non-boolean flag, an error answer or no answer at all
+    is False, and the success report is then sent without the link fields (an older web app refuses unknown fields)."""
+    return web_app_flags(url, token).get(LINK_CAPABILITY_FLAG) is True
+
+
+def without_unsupported_parts(payload, flags):
+    """The success report request without the optional OHLC part unless the web app says (report_ohlc_supported exactly true) that it accepts it: an older web app refuses unknown parts, and its e-mail simply has no snapshot."""
+    report = payload.get("report")
+    if isinstance(report, dict) and "ohlc" in report and flags.get(OHLC_CAPABILITY_FLAG) is not True:
+        print("NOTICE: the deployed Apps Script does not report report_ohlc_supported: true, so the success report is sent without the OHLC snapshot", file=sys.stderr)
+        return dict(payload, report={name: part for name, part in report.items() if name != "ohlc"})
+    return payload
+
+
+def with_report_link(payload, state, supported):
     """The success report request with its optional link field, or the unchanged request when the web app does not support the link. The address is built from the request's own analysis date."""
-    if not report_link_supported(url, token):
+    if not supported:
         print("NOTICE: the deployed Apps Script does not report report_link_supported: true, so the success report is sent without a report link (the e-mail carries the artifact link only)", file=sys.stderr)
         return payload
     linked = dict(payload)
@@ -941,8 +956,11 @@ def command_post(args, env, today):
         url, token = read_secrets(env)
         if action == "upsert_analysis" and context is not None and f"{REPORT_ACTION}.json" in context["payloads"]:       # the run will send the evidence-backed report: check the web app BEFORE the first write
             preflight_web_app(url, token)
-        if action == REPORT_ACTION and args.report_link is not None:                       # after the preflight, so a web app without the capability is never sent a field it would refuse
-            payload = with_report_link(payload, "verified" if args.report_link == "verified" else "unavailable", url, token)       # fail-safe: only the exact word 'verified' ever produces a Pages link
+        if action == REPORT_ACTION:                                                         # after the preflight; one read-only self_check tells what this web app accepts, so it is never sent a field or part it would refuse
+            flags = web_app_flags(url, token)
+            payload = without_unsupported_parts(payload, flags)
+            if args.report_link is not None:
+                payload = with_report_link(payload, "verified" if args.report_link == "verified" else "unavailable", flags.get(LINK_CAPABILITY_FLAG) is True)       # fail-safe: only the exact word 'verified' ever produces a Pages link
         reply, attempts = post_action(url, payload, token)
     except AutomationError as error:
         result = {"success": False, "error": "NOT_SENT" if error.delivery == "not_sent" else "TRANSPORT", "sheet_status": _sheet_status_after_transport_failure(error), "email_status": "not_attempted", "attempts": error.attempts}
@@ -1034,7 +1052,7 @@ def command_notify_failure(args, env, today):
 def clean_self_check(reply, attempts):
     """The self-check reply keeps only booleans and the six property flags; anything else the web app sends is dropped."""
     kept = {}
-    for name in ("success", *SELF_CHECK_FLAGS, CAPABILITY_FLAG, LINK_CAPABILITY_FLAG):
+    for name in ("success", *SELF_CHECK_FLAGS, CAPABILITY_FLAG, LINK_CAPABILITY_FLAG, OHLC_CAPABILITY_FLAG):
         if isinstance(reply.get(name), bool):
             kept[name] = reply[name]
     properties = reply.get("properties")

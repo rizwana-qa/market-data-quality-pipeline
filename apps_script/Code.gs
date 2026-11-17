@@ -62,7 +62,7 @@ const MAX_REPORT_ROWS = 400;
 const WINDOW_DAYS = 30;
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
 const REPORT_REQUIRED_KEYS = ['meta', 'assets', 'pair', 'coverage', 'charts'];
-const REPORT_OPTIONAL_KEYS = ['comparison', 'validation'];     // sent by newer clients; a report without them (an older client) is still accepted and is shown with the completeness wording only
+const REPORT_OPTIONAL_KEYS = ['comparison', 'validation', 'ohlc'];     // sent by newer clients; a report without them (an older client) is still accepted and is shown with the completeness wording only
 const VALIDATION_OUTCOMES = ['PASS', 'FAIL', 'BLOCKED', 'NOT RUN', 'INCONCLUSIVE'];
 const VALIDATION_SEVERITIES = ['ERROR', 'WARNING'];
 const STRONGER_VALUES = ['BTC', 'ETH', 'equal'];
@@ -498,7 +498,29 @@ function validateReport_(report, runId) {
   validateCharts_(report.charts);
   if (hasOwn_(report, 'comparison')) validateComparison_(report.comparison);
   if (hasOwn_(report, 'validation')) validateValidation_(report.validation, runId);
+  if (hasOwn_(report, 'ohlc')) validateOhlc_(report.ohlc);
   return report;
+}
+
+// Open, high, low and close of the latest day, both assets: exact keys, positive numbers, open and close inside the day's range. handleSuccessReport_ also checks them against the analysis date and the closes of the summary.
+function validateOhlc_(ohlc) {
+  requireExactKeys_(ohlc, ['date', 'btc', 'eth']);
+  validateDate_(ohlc.date);
+  ['btc', 'eth'].forEach(function (asset) {
+    const v = ohlc[asset];
+    requireExactKeys_(v, ['open', 'high', 'low', 'close']);
+    ['open', 'high', 'low', 'close'].forEach(function (name) { if (!isNumberIn_(v[name], 0, 1e9, true)) throw invalid_(); });
+    if (!(v.low <= v.open && v.open <= v.high && v.low <= v.close && v.close <= v.high)) throw invalid_();
+  });
+}
+
+function ohlcMatches_(report, date, summary) {
+  if (!hasOwn_(report, 'ohlc')) return;
+  if (report.ohlc.date !== date) throw invalid_();
+  ['btc', 'eth'].forEach(function (asset) {
+    const close = report.ohlc[asset].close;
+    if (Math.abs(close - summary[asset].close) > Math.abs(close) * 1e-9) throw invalid_();            // the snapshot may never contradict the close that the sheet and the cards show
+  });
 }
 
 // ------------------------------------------------------------------ the sheet
@@ -682,6 +704,7 @@ function handleSuccessReport_(request, secret) {
   const artifactUrl = validateArtifactUrl_(request.artifact_url, runId);
   const reportLink = resolveReportLink_(request, date);
   const report = validateReport_(request.report, runId);
+  ohlcMatches_(report, date, summary);
   const config = readSheetConfig_();
   return withLock_(function () {
     verifiedRows_(config, rows);                                   // no success e-mail unless the sheet really holds the rows
@@ -690,7 +713,7 @@ function handleSuccessReport_(request, secret) {
     const dedupeKey = 'ok:' + runId + ':' + date;
     if (cache.get(dedupeKey)) return { sheet_status: 'ok', email_status: 'skipped_duplicate' };
     const subject = 'Daily Market Analysis OK - ' + date;
-    const text = successBody_(date, validation, update, summary, runId, url, secret) + '\n\nDeliverables (HTML dashboard, report and CSV; GitHub sign-in required): ' + artifactUrl + reportLinkText_(reportLink);
+    const text = successBody_(date, validation, update, summary, runId, url, secret) + '\n\nData fetched from Kraken (UTC): ' + report.meta.data_fetched + '\n\nDeliverables (HTML dashboard, report and CSV; GitHub sign-in required): ' + artifactUrl + reportLinkText_(reportLink);
     const format = sendReportMail_(recipient, subject, text, { date: date, validation: validation, reportStatus: rows[0].values[8], update: update, summary: summary, runId: runId, url: url, artifactUrl: artifactUrl, reportLink: reportLink, report: report }, secret);
     return recordSent_(cache, dedupeKey, { sheet_status: 'ok', email_status: 'sent', email_format: format });
   });
@@ -766,7 +789,7 @@ function handleSelfCheck_(request) {
   const emailValid = EMAIL_PATTERN.test(readProperty_('EMAIL_TO'));
   const sheetNameMatches = hasExpectedName ? properties.SHEET_NAME && readProperty_('SHEET_NAME') === request.expected_sheet_name : true;
   const ok = CONFIG_PROPERTIES.every(function (name) { return properties[name]; }) && spreadsheetFound && sheetFound && headersOk && emailValid && sheetNameMatches;
-  const result = { success: ok, properties: properties, spreadsheet_found: spreadsheetFound, sheet_found: sheetFound, headers_ok: headersOk, email_valid: emailValid, report_evidence_supported: true, report_link_supported: true };   // tells the client (before it writes anything) that this script accepts the comparison and validation parts of the report, and the optional report_url / report_link_status
+  const result = { success: ok, properties: properties, spreadsheet_found: spreadsheetFound, sheet_found: sheetFound, headers_ok: headersOk, email_valid: emailValid, report_evidence_supported: true, report_link_supported: true, report_ohlc_supported: true };   // tells the client (before it writes anything) that this script accepts the comparison and validation parts of the report, and the optional report_url / report_link_status
   if (hasExpectedName) result.sheet_name_matches = Boolean(sheetNameMatches);
   if (!ok) { result.error = 'NOT_CONFIGURED'; result.message = MESSAGES.NOT_CONFIGURED; }
   return result;
@@ -1044,12 +1067,15 @@ function reportHtml_(d, secret) {
     '<table role="presentation" class="container" width="600" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff" style="border-collapse:collapse;width:600px;background-color:#ffffff;border:1px solid ' + LINE + ';">');
   parts.push('<tr><td class="pad" bgcolor="#0f172a" style="background-color:#0f172a;padding:22px 24px;"><h1 style="margin:0;font-family:' + FONT + ';font-size:22px;line-height:28px;color:#ffffff;">Daily Market Analysis</h1>' +
     text_('font-size:14px;line-height:20px;color:#cbd5e1;padding-top:6px;', 'Bitcoin vs Ethereum, Kraken daily data. Analysis date (last completed UTC day): <strong style="color:#ffffff;">' + escapeHtml_(d.date) + '</strong>') +
+    text_('font-size:13px;line-height:20px;color:#cbd5e1;padding-top:4px;', 'Data fetched from Kraken (UTC): <strong style="color:#ffffff;">' + escapeHtml_(meta.data_fetched) + '</strong>') +
     text_('font-size:13px;line-height:20px;color:#cbd5e1;padding-top:4px;', 'Reporting period: the last ' + WINDOW_DAYS + ' daily returns, ending ' + escapeHtml_(d.date) + '.') +
     text_('font-size:13px;line-height:20px;color:' + (bad ? '#fecaca' : '#cbd5e1') + ';padding-top:8px;font-weight:bold;', escapeHtml_(confidenceLine_(report))) + '</td></tr>');
   const linkSection = reportLinkSection_(d.reportLink);
   if (linkSection) parts.push(linkSection);                         // nothing is added for an older client, so its e-mail stays byte for byte what it was
   parts.push(section_('Market brief', brief.join('') + (observations ? '<ul style="margin:0 0 12px 18px;padding:0;font-family:' + FONT + ';font-size:13px;line-height:19px;color:' + INK + ';">' + observations + '</ul>' : '') +
     text_('font-size:11px;line-height:16px;color:' + MUTED + ';padding-bottom:12px;', 'Descriptive labels for this 30-day sample only, not advice.')));
+  const ohlcBlock = ohlcSection_(report);
+  if (ohlcBlock) parts.push(ohlcBlock);                             // only a newer client sends the OHLC part
   parts.push(section_('Latest figures', '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr><td class="stack" width="50%" valign="top" style="padding:0 6px 12px 0;">' + assetCard_('BTC', 'Bitcoin', BTC_COLOUR, s.btc, report.assets.btc) +
     '</td><td class="stack" width="50%" valign="top" style="padding:0 0 12px 6px;">' + assetCard_('ETH', 'Ethereum', ETH_COLOUR, s.eth, report.assets.eth) + '</td></tr></table>' +
     text_('font-size:11px;line-height:16px;color:' + MUTED + ';padding-bottom:12px;', 'Returns are changes of the daily close; volatility is the sample standard deviation of the 30 daily returns; drawdown is the largest fall from a previous high within the window.')));
@@ -1078,6 +1104,20 @@ function reportHtml_(d, secret) {
 
 // The interactive report link of the success e-mail. 'none' (an older client) keeps the e-mail exactly as it was. 'verified': the primary button to the exact dated Pages report.
 // 'unavailable': no Pages button at all; the notice points to the artifact, which holds the report and has its own button in the deliverables section below.
+// The latest day's open, high, low and close of both assets as a small table (label and two value columns, so that it stays readable in a narrow window). Only when the report carries them (a newer client).
+function ohlcSection_(report) {
+  if (!hasOwn_(report, 'ohlc')) return '';
+  const o = report.ohlc;
+  const head = function (colour) { return 'padding:6px 0 6px 8px;font-family:' + FONT + ';font-size:12px;line-height:16px;font-weight:bold;color:' + INK + ';border-bottom:3px solid ' + colour + ';'; };
+  const row = function (label, key, bold) {
+    const cell = function (asset) { return '<td align="right" style="padding:5px 0 5px 8px;font-family:' + FONT + ';font-size:13px;line-height:18px;color:' + INK + ';border-bottom:1px solid ' + LINE + ';' + (bold ? 'font-weight:bold;' : '') + '">' + escapeHtml_(money_(o[asset][key])) + '</td>'; };
+    return '<tr><td style="padding:5px 0;font-family:' + FONT + ';font-size:13px;line-height:18px;color:' + MUTED + ';border-bottom:1px solid ' + LINE + ';">' + label + '</td>' + cell('btc') + cell('eth') + '</tr>';
+  };
+  const grid = table_('100%', 'margin-bottom:8px;', '<tr><td width="28%" style="font-size:1px;line-height:1px;">&nbsp;</td><td width="36%" align="right" style="' + head(BTC_COLOUR) + '">Bitcoin (BTC)</td><td width="36%" align="right" style="' + head(ETH_COLOUR) + '">Ethereum (ETH)</td></tr>' +
+    row('Open', 'open', false) + row('High', 'high', false) + row('Low', 'low', false) + row('Close', 'close', true));
+  return section_('Market snapshot', text_('font-size:12px;line-height:17px;color:' + MUTED + ';padding-bottom:8px;', 'Latest completed UTC day, ' + escapeHtml_(o.date) + '. Open, high, low and close in USD, from the Kraken daily candles.') + grid);
+}
+
 function reportLinkSection_(link) {
   if (link.outcome === 'none') return '';
   if (link.outcome === 'verified') {

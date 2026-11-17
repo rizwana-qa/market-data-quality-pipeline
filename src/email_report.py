@@ -43,7 +43,7 @@ ASSET_KEYS = {"return_7d", "return_14d", "return_30d", "volatility_annualised", 
 PAIR_KEYS = {"volatility_ratio", "joint_negative_days", "overlap_share"}
 META_KEYS = {"rows", "first_date", "data_fetched", "generated_at"}
 REPORT_KEYS = {"meta", "assets", "pair", "coverage", "charts"}
-OPTIONAL_KEYS = {"comparison", "validation"}
+OPTIONAL_KEYS = {"comparison", "validation", "ohlc"}
 COMPARISON_KEYS = {"stronger", "spread_pp", "correlation_7d", "correlation_14d"}
 VALIDATION_KEYS = {"run_id", "overall", "fields_total", "fields_validated", "instances_expected", "instances_evaluated", "instances_passed", "checks_total", "checks_passed", "assumptions", "exceptions"}
 EXCEPTION_KEYS = {"rule_id", "severity", "outcome", "field", "explanation"}
@@ -283,6 +283,16 @@ def _fetched_time(report_text):
     return found.group(1) + " UTC"
 
 
+def _ohlc(dataset):
+    """Open, high, low and close of the latest day of the validated CSV, for both assets, exactly as the CSV holds them (no calculation, no rounding)."""
+    last = dataset["rows"][-1]
+    part = {"date": dataset["dates"][-1]}
+    for asset in dashboard.ASSETS:
+        columns = dashboard.CANDLE_COLUMNS[asset]
+        part[asset.lower()] = {name: float(last[columns[name]]) for name in ("open", "high", "low", "close")}
+    return part
+
+
 def build_report(outputs, generated_at):
     """The report for the e-mail, from the validated outputs of daily_automation.validate_outputs. generated_at is a timezone-aware datetime."""
     if not isinstance(generated_at, datetime) or generated_at.tzinfo is None:
@@ -303,6 +313,7 @@ def build_report(outputs, generated_at):
         "coverage": _coverage(dataset),
         "charts": [_chart_entry(kind, *series[kind]) for kind in CHART_IDS],
         "comparison": comparison_of(metrics["cumulative_return"]["BTC"], metrics["cumulative_return"]["ETH"], shorter[7]["correlation"], shorter[14]["correlation"]),
+        "ohlc": _ohlc(dataset),
     }
     validation = build_validation(outputs)
     if validation is not None:                                                      # without evidence there is no validation part, and the e-mail never shows a PASS
@@ -398,6 +409,20 @@ def _check_validation(validation):
         raise EmailReportError("a validation PASS needs complete evidence: every field, instance and check passed and no exception")
 
 
+def _check_ohlc(ohlc):
+    _keys(ohlc, {"date", "btc", "eth"}, "ohlc")
+    _date(ohlc["date"], "ohlc.date")
+    for asset in ("btc", "eth"):
+        values = ohlc[asset]
+        _keys(values, {"open", "high", "low", "close"}, f"ohlc.{asset}")
+        for name in ("open", "high", "low", "close"):
+            _finite(values[name], f"ohlc.{asset}.{name}", low=0)
+            if values[name] <= 0:
+                raise EmailReportError(f"ohlc.{asset}.{name} must be above zero")
+        if not (values["low"] <= values["open"] <= values["high"] and values["low"] <= values["close"] <= values["high"]):
+            raise EmailReportError(f"ohlc.{asset}: open and close must lie between low and high")
+
+
 def check_report(report):
     """Raises EmailReportError (one line) unless the report is complete, plausible, safe to send and small enough for the web app's request limit."""
     if not isinstance(report, dict) or not REPORT_KEYS <= set(report) or set(report) - REPORT_KEYS - OPTIONAL_KEYS:
@@ -422,6 +447,8 @@ def check_report(report):
         _finite(figures["negative_days"], f"assets.{asset}.negative_days", low=0, high=WINDOW_DAYS, integer=True)
         for key in ("drawdown_peak", "drawdown_trough"):
             _date(figures[key], f"assets.{asset}.{key}", nullable=True)
+    if "ohlc" in report:
+        _check_ohlc(report["ohlc"])
     _keys(report["pair"], PAIR_KEYS, "pair")
     _finite(report["pair"]["volatility_ratio"], "pair.volatility_ratio", low=0, nullable=True)
     _finite(report["pair"]["joint_negative_days"], "pair.joint_negative_days", low=0, high=WINDOW_DAYS, integer=True)
