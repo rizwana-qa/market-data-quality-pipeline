@@ -39,7 +39,7 @@ check("legacy: the e-mail of a request without link fields is byte for byte the 
   // the only later change is the data-freshness line (the validated fetch time); with exactly that line removed the e-mail is the pinned original
   const fresh = /<p style="[^"]*">Data fetched from Kraken \(UTC\): <strong style="color:#ffffff;">[^<]*<\/strong><\/p>/;
   assert.ok(fresh.test(html(m))); assert.ok(text(m).includes("\n\nData fetched from Kraken (UTC): 2026-10-28 02:15:12 UTC"));
-  assert.equal(sha(html(m).replace(fresh, "")), "2b65cdd4c17b177a9b2559469e3717f85bcfffaef270b10e3cbbc75378c39b01");
+  assert.equal(sha(html(m).replace(fresh, "")), "86bd317c1c553697f91a78d23520fae3f6f1741e9e99c5d85f4921264a2e5d98");
   assert.equal(sha(text(m).replace("\n\nData fetched from Kraken (UTC): 2026-10-28 02:15:12 UTC", "")), "a262b2eef3e559a8c042f9f289cb1184cdd3be58a8b2e3aeb041cc09982892c0");
 });
 

@@ -40,7 +40,7 @@ check("freshness: an invalid or missing fetch time is still refused by the exist
 check("legacy: apart from that one line the e-mail is byte for byte the e-mail the script sent before (SHA-256 of the HTML and of the plain text after removing exactly the freshness lines)", () => {
   const { mail } = send(reportPayload({})); const h = html(mail).replace(FRESH, ""); const t = text(mail).replace("\n\nData fetched from Kraken (UTC): 2026-10-28 02:15:12 UTC", "");
   assert.notEqual(h, html(mail)); assert.notEqual(t, text(mail));
-  assert.equal(sha(h), "2b65cdd4c17b177a9b2559469e3717f85bcfffaef270b10e3cbbc75378c39b01"); assert.equal(sha(t), "a262b2eef3e559a8c042f9f289cb1184cdd3be58a8b2e3aeb041cc09982892c0");
+  assert.equal(sha(h), "86bd317c1c553697f91a78d23520fae3f6f1741e9e99c5d85f4921264a2e5d98"); assert.equal(sha(t), "a262b2eef3e559a8c042f9f289cb1184cdd3be58a8b2e3aeb041cc09982892c0");
   assert.ok(!html(mail).includes("Market snapshot"), "an older client sends no OHLC part, so there is no snapshot");
 });
 

@@ -582,6 +582,22 @@ check("layout (Phase A): the order is brief, figures, performance chart, risk te
   for (const guide of ["Both assets start at 100", "Bars below zero are down days", "0% means the asset closed at its highest close"]) assert.ok(html.includes(guide), guide);
   assert.deepEqual(Object.keys(lastMail(w).inlineImages).sort(), ["chart_drawdown", "chart_indexed", "chart_returns"]);
 });
+check("layout (Stage 4): a coral rule over the report's navy banner, exactly four navy KPI cards in a 2 x 2 grid (BTC and ETH latest close, BTC and ETH 30-return performance) with the request's own figures and amber and blue rails, the report's palette, and every text colour at least 4.5:1 on its background", () => {
+  const w = world(); sentReport(w); const html = lastMail(w).htmlBody, text = textOf(html), source = readSource();
+  assert.ok(html.indexOf('bgcolor="#e8796b"') < html.indexOf('bgcolor="#102b43"') && html.indexOf('bgcolor="#102b43"') < html.indexOf("Daily Market Analysis</h1>"), "coral rule, then the navy banner with the title");
+  assert.equal((html.match(/<td class="kpi"/g) || []).length, 4, "exactly four KPI cards");
+  const labels = ["Bitcoin \u00b7 Latest close", "Ethereum \u00b7 Latest close", "BTC \u00b7 30-return performance", "ETH \u00b7 30-return performance"];
+  const at = labels.map((label) => text.indexOf(label)); assert.ok(at.every((i) => i >= 0) && at.every((i, k) => k === 0 || i > at[k - 1]) && at[3] < text.indexOf("Market brief"), "the four labels, in order, before the brief");
+  const cards = [...html.matchAll(/<td class="kpi"[\s\S]*?<\/table><\/td>/g)].map((m) => textOf(m[0]));
+  assert.ok(cards[0].includes("$80,001.90") && cards[0].includes("Daily move -0.06%"), cards[0]); assert.ok(cards[1].includes("$2,320.45") && cards[1].includes("Daily move +0.31%"), cards[1]);
+  assert.ok(cards[2].includes("-5.20%") && cards[2].includes("31 closes \u00b7 first to latest"), cards[2]); assert.ok(cards[3].includes("-10.00%") && cards[3].includes("31 closes \u00b7 first to latest"), cards[3]);
+  assert.equal((html.match(/<td width="4" bgcolor="#f2a84a"/g) || []).length, 2, "amber rail on the two BTC cards"); assert.equal((html.match(/<td width="4" bgcolor="#68aaff"/g) || []).length, 2, "blue rail on the two ETH cards"); assert.ok(html.includes("background-color:#102b43;border:1px solid #294c67"), "navy cards");
+  for (const needle of ["const NAVY = '#102b43';", "const NAVY2 = '#174563';", "const AMBER = '#f2a84a';", "const BLUE = '#68aaff';", "const CORAL = '#e8796b';", "const BTC_COLOUR = '#f7931a';", "const ETH_COLOUR = '#627eea';"]) assert.ok(source.includes(needle), needle);
+  const lum = (hex) => { const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const ratio = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  for (const [fg, bg] of [["#263747", "#ffffff"], ["#586a79", "#ffffff"], ["#586a79", "#f5f7f9"], ["#102b43", "#ffffff"], ["#b23f30", "#ffffff"], ["#b83a47", "#ffffff"], ["#1f7a54", "#ffffff"], ["#ffffff", "#102b43"], ["#a9d0e5", "#102b43"], ["#cbd5e1", "#102b43"], ["#fecaca", "#102b43"], ["#ffffff", "#174563"], ["#b8cada", "#102b43"], ["#b2c3d2", "#102b43"], ["#f07883", "#102b43"], ["#5fd3a0", "#102b43"], ["#d6e4ef", "#102b43"], ["#d0e0ec", "#102b43"]]) assert.ok(ratio(fg, bg) >= 4.5, fg + " on " + bg + " is " + ratio(fg, bg).toFixed(2));
+  assert.ok(!/<(div|button|svg|script)\b/.test(html) && html.length < 60000, "email-safe, under the size budget");
+});
 check("layout (Phase A): the R1 to R3 thresholds are explained as classifications, not signals; the 30-day correlation is the primary measure; no diversification claim", () => {
   const text = textOf((() => { const w = world(); sentReport(w); return lastMail(w).htmlBody; })());
   for (const needle of ["0.30 and 0.70", "1.25 and 0.80", "0.75 and 0.50", "not trading signals", "does not guarantee diversification", "The 30-day correlation is the primary measure", "Past volatility does not predict future volatility"]) assert.ok(text.includes(needle), needle);
