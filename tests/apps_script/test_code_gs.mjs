@@ -324,7 +324,7 @@ check("report: authentication comes first - a wrong, missing, padded or non-stri
 check("report: a valid request sends ONE e-mail - to EMAIL_TO, the usual subject, a plain-text body, an HTML body and the three charts as inline PNG images - and reports email_format html", () => {
   const w = world(); const r = sentReport(w); assert.equal(r.success, true, JSON.stringify(r)); assert.equal(r.action, "send_success_report"); assert.equal(r.email_status, "sent"); assert.equal(r.email_format, "html"); assert.equal(r.sheet_status, "ok");
   assert.equal(w.state.mail.sent.length, 1); const m = lastMail(w);
-  assert.equal(m.to, "owner@example.test"); assert.equal(m.subject, "Daily Market Analysis OK - 2026-10-27"); assert.ok(typeof m.body === "string" && m.body.length > 200 && typeof m.htmlBody === "string" && m.htmlBody.length > 2000);
+  assert.equal(m.to, "owner@example.test"); assert.equal(m.subject, "Bitcoin & Ethereum Market Intelligence | 2026-10-27"); assert.ok(typeof m.body === "string" && m.body.length > 200 && typeof m.htmlBody === "string" && m.htmlBody.length > 2000);
   assert.deepEqual(Object.keys(m.inlineImages).sort(), ["chart_drawdown", "chart_indexed", "chart_returns"]);
   for (const image of Object.values(m.inlineImages)) { assert.equal(image.contentType, "image/png"); assert.equal(image.head, "89504e470d0a1a0a"); assert.ok(image.size > 100 && image.size < 6000, String(image.size)); }
 });
@@ -391,13 +391,14 @@ check("report: the HTML is email-safe and well formed - balanced tables, present
   for (const tag of html.match(/<table[^>]*>/g)) assert.ok(/role="presentation"/.test(tag) && /style="/.test(tag), "table without role/inline style: " + tag);
   const cids = s.images.map((attributes) => { assert.ok(/ src="cid:chart_[a-z]+"/.test(attributes) && / alt="[^"]{20,}"/.test(attributes) && / width="600"/.test(attributes) && / height="240"/.test(attributes) && /style="/.test(attributes), attributes); return /src="cid:([a-z_]+)"/.exec(attributes)[1]; });
   assert.deepEqual([...cids].sort(), Object.keys(m.inlineImages).sort(), "every cid needs exactly one inline image and the other way round");
-  assert.deepEqual([...new Set(s.hrefs)].sort(), [ARTIFACT_URL, WORKFLOW_URL].sort(), "links"); assert.ok(html.length < 60000, "HTML size " + html.length);
+  assert.deepEqual([...new Set(s.hrefs)], [], "an e-mail without a verified report link has no link at all (no artifact, no workflow run)"); assert.ok(html.length < 60000, "HTML size " + html.length);
 });
 check("report: the content - date and status, both closes, daily and 7/14/30-day returns, volatility, drawdown with its dates, correlation, the rule labels, the observations, the completeness statement (not a validation claim), the time stamps and the disclaimer", () => {
   const w = world(); sentReport(w); const text = textOf(lastMail(w).htmlBody);
   for (const needle of ["Daily Market Analysis", "2026-10-27", "Data completeness: 17 of 17 fields populated", "80,001.90", "2,320.45", "-0.06%", "+0.31%", "-2.10%", "+3.40%", "-5.20%", "+5.00%", "-10.00%", "1.61%", "2.12%", "31.00%", "40.00%", "-7.52%", "-14.89%", "2026-10-02", "2026-10-15",
                          "0.928089", "strong positive correlation", "ETH noticeably more volatile", "down days largely coincide", "Both assets fell on 16 of 30 days.", "1.317", "12", "0.86", "-6.11%", "2026-10-12",
-                         "Google Sheets", "verified", "2 inserted", "0 updated", "2026-10-28 02:15:12 UTC", "2026-10-28 02:15:20 UTC", "Educational use only. Not financial advice.", "17 of 17"]) assert.ok(text.includes(needle), "the e-mail lacks: " + needle);
+                         "2026-10-28 02:15:12 UTC", "Educational use only. Not financial advice.", "17 of 17"]) assert.ok(text.includes(needle), "the e-mail lacks: " + needle);
+  for (const gone of ["Google Sheets", "2 inserted", "Workflow run", "Executed:", "2026-10-28 02:15:20 UTC", "Deliverables", "Download the", "Interactive market report"]) assert.ok(!text.includes(gone), "the reader-facing e-mail must not carry: " + gone);
   for (const name of COVERAGE_NAMES.filter((n) => n.includes("_"))) assert.ok(!text.includes(name), "the 17-field inventory must not be listed: " + name);
   assert.ok(!text.includes("PASSED") && !text.includes("GENERATED") && !text.includes("Data validation: PASS"), "no constant status claim");
 });
@@ -576,9 +577,9 @@ check("layout (Phase A): the 17-row field table is gone - no table headers, no v
   const w = world(); sentReport(w); const html = lastMail(w).htmlBody; assert.ok(!/<th\b/.test(html) && !html.includes("Valid rows") && !html.includes("Latest value"), "the technical table is still there");
   for (const name of COVERAGE_NAMES.filter((n) => n.includes("_"))) assert.ok(!html.includes(name), name);        // "date" is also an ordinary word, so only the underscored variable names are looked for
 });
-check("layout (Phase A): the order is brief, figures, performance chart, risk text, drawdown chart, returns chart, relationship, data confidence, operations - the three charts are kept, each with a reading guide", () => {
+check("layout (Phase A): the order is brief, figures, performance chart, risk text, drawdown chart, returns chart, relationship, data confidence (no deliverables section) - the three charts are kept, each with a reading guide", () => {
   const w = world(); sentReport(w); const html = lastMail(w).htmlBody;
-  assert.ok(ascending(positions(html, ["Market brief", "Latest figures", "cid:chart_indexed", "Risk and volatility", "cid:chart_drawdown", "cid:chart_returns", "How the assets moved together", "Data confidence", "Google Sheets and deliverables"])), positions(html, ["Market brief", "Latest figures", "cid:chart_indexed", "Risk and volatility", "cid:chart_drawdown", "cid:chart_returns", "How the assets moved together", "Data confidence", "Google Sheets and deliverables"]));
+  assert.ok(ascending(positions(html, ["Market brief", "Latest figures", "cid:chart_indexed", "Risk and volatility", "cid:chart_drawdown", "cid:chart_returns", "How the assets moved together", "Data confidence"])), positions(html, ["Market brief", "Latest figures", "cid:chart_indexed", "Risk and volatility", "cid:chart_drawdown", "cid:chart_returns", "How the assets moved together", "Data confidence"]));
   for (const guide of ["Both assets start at 100", "Bars below zero are down days", "0% means the asset closed at its highest close"]) assert.ok(html.includes(guide), guide);
   assert.deepEqual(Object.keys(lastMail(w).inlineImages).sort(), ["chart_drawdown", "chart_indexed", "chart_returns"]);
 });
@@ -655,6 +656,58 @@ check("Phase B: Apps Script performs only contract and invariant checks - the so
 check("self_check: the read-only reply tells the client that this script supports the evidence-backed report (report_evidence_supported), and nothing is written or sent", () => {
   const w = world(); const r = w.call({ action: "self_check", token: SECRET, expected_sheet_name: "Sheet1" });
   assert.equal(r.report_evidence_supported, true); assert.equal(r.success, true); assert.deepEqual(w.dataRows(), []); assert.equal(w.state.mail.sent.length, 0);
+});
+
+// ------------------------------------------------------------------------------------------------------------ market intelligence section, subject and final button
+const INTEL = () => ({
+  correlation: { rows: [["Window", "30 daily returns, 2026-09-28 to 2026-10-27"], ["Valid observations", "30 of 30"], ["Pearson correlation of returns", "0.93"], ["Classification (rule R1)", "strong positive"]], text: "Over 30 aligned daily percentage returns the assets show strong positive co-movement (Pearson 0.93). It is not causation." },
+  relative_strength: { rows: [["Performance, 30 returns", "BTC -5.20% / ETH -10.00%"], ["Relatively stronger", "BTC"]], text: "BTC was the relatively stronger asset. This describes what has happened; it does not imply that it will continue." },
+  risk: { rows: [["Realised volatility, annualised", "BTC 31.00% / ETH 40.00%"], ["Maximum drawdown", "BTC -7.52% / ETH -14.89%"]], text: "ETH's realised volatility was materially higher (1.32 times BTC's). Method: sample standard deviation of 30 daily returns." },
+  scenarios: [{ name: "Bullish", evidence: "Bullish evidence text.", supports: "Bullish supporting condition.", weakens: "Bullish weakening condition." },
+              { name: "Neutral", evidence: "Neutral evidence text.", supports: "Neutral supporting condition.", weakens: "Neutral weakening condition." },
+              { name: "Bearish", evidence: "Bearish evidence text.", supports: "Bearish supporting condition.", weakens: "Bearish weakening condition." }],
+  interpretation: { divergence: "Divergence text.", risk_signal: "Risk signal text.", monitor: "Monitor text." },
+  disclaimer: "Illustrative scenarios, not predictions or recommendations.",
+});
+const withIntel = (intel, link) => { const report = reportBody(); report.intelligence = intel; return Object.assign({ report }, link || {}); };
+const REPORT_LINK = { report_url: "https://rizwana-qa.github.io/market-data-quality-pipeline/reports/2026-10-27/market_intelligence_report.html" };
+check("intelligence: the section is rendered with its five subsections and three labelled scenarios, after the relationship section and before the data confidence, and the e-mail stays safe HTML", () => {
+  const w = world(); const r = sentReport(w, withIntel(INTEL())); assert.equal(r.success, true); assert.equal(r.email_format, "html"); const html = lastMail(w).htmlBody, s = structureOf(html);
+  assert.deepEqual(s.problems, [], s.problems.join("; ")); assert.ok(html.includes(">Market Intelligence &amp; Forward-Looking Scenarios</h2>"));
+  const order = ["How the assets moved together", "Market Intelligence &amp;", "BTC–ETH correlation (historical)", "Relative strength and momentum (historical)", "Volatility and risk (historical)", "Forward-looking scenarios (illustrative, not predictions)",
+    "Bullish scenario (illustrative)", "Neutral scenario (illustrative)", "Bearish scenario (illustrative)", "Decision-relevant interpretation", "Data confidence"];
+  assert.ok(ascending(positions(html, order)), JSON.stringify(positions(html, order)));
+  for (const needle of ["Pearson correlation of returns", "0.93", "Could support it:", "Would weaken it:", "Principal risk signal:", "Indicator to monitor next:", "not predictions or recommendations"]) assert.ok(html.includes(needle), needle);
+  assert.ok(!/<script|<button|<svg/i.test(html) && html.length < 60000, "html size " + html.length);
+});
+check("intelligence: the text is escaped, an older client's e-mail simply has no section, and the e-mail keeps its charts, KPI cards and provenance", () => {
+  const intel = INTEL(); intel.interpretation.monitor = "Monitor A & B 'quoted'";
+  const w = world(); sentReport(w, withIntel(intel)); const html = lastMail(w).htmlBody; assert.ok(html.includes("Monitor A &amp; B &#39;quoted&#39;"));
+  for (const keep of ["Executive dashboard", "Latest figures", "cid:chart_indexed", "cid:chart_drawdown", "cid:chart_returns", "Data confidence", "Data fetched from Kraken (UTC)"]) assert.ok(html.includes(keep), keep);
+  const old = world(); sentReport(old); assert.ok(!lastMail(old).htmlBody.includes("Market Intelligence &amp; Forward-Looking Scenarios"));
+});
+check("intelligence: a malformed part is refused as INVALID_PAYLOAD with nothing sent - unknown key, missing or reordered scenario, markup in text, too many rows, a non-string cell, a missing section", () => {
+  const bad = { "unknown key": (i) => { i.extra = 1; }, "missing scenario": (i) => { i.scenarios.pop(); }, "reordered scenarios": (i) => { i.scenarios.reverse(); }, "wrong scenario name": (i) => { i.scenarios[0].name = "Moonshot"; },
+    "markup in text": (i) => { i.risk.text = "<b>x</b>"; }, "markup in a row": (i) => { i.correlation.rows[0][1] = "a>b"; }, "six rows": (i) => { i.risk.rows = [1, 2, 3, 4, 5, 6].map((n) => ["L" + n, "V" + n]); },
+    "number cell": (i) => { i.risk.rows[0][1] = 5; }, "missing section": (i) => { delete i.relative_strength; }, "empty text": (i) => { i.risk.text = ""; }, "long text": (i) => { i.scenarios[1].evidence = "x".repeat(601); },
+    "control character": (i) => { i.interpretation.monitor = "a\u0001b"; }, "extra scenario key": (i) => { i.scenarios[2].price_target = "1"; }, "not an object": (i) => { i.risk = "text"; } };
+  for (const [name, mutate] of Object.entries(bad)) { const intel = INTEL(); mutate(intel); const w = world(); const r = sentReport(w, withIntel(intel)); assert.equal(r.success, false, name); assert.match(String(r.error), /INVALID/, name); assert.equal(w.state.mail.sent.length, 0, name); }
+});
+check("subject: the success e-mail subject is 'Bitcoin & Ethereum Market Intelligence | <analysis date>', built from the validated analysis date, for the HTML report and for the legacy success e-mail", () => {
+  const w = world(); sentReport(w); assert.equal(lastMail(w).subject, "Bitcoin & Ethereum Market Intelligence | 2026-10-27");
+  const l = world(); l.call(upsertPayload()); const r = l.call(emailPayload()); assert.equal(r.success, true); assert.equal(lastMail(l).subject, "Bitcoin & Ethereum Market Intelligence | 2026-10-27");
+  const day = (d) => { const x = world({ now: new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10) + 1, 2, 15, 30)) }); x.call(upsertPayload({ analysis_date: d, rows: [btcRow({ "Run date": d }), ethRow({ "Run date": d })] })); return x; };
+  const x = day("2026-11-16"); const rx = x.call(emailPayload({ analysis_date: "2026-11-16", rows: [btcRow({ "Run date": "2026-11-16" }), ethRow({ "Run date": "2026-11-16" })] })); if (rx.success) assert.equal(lastMail(x).subject, "Bitcoin & Ethereum Market Intelligence | 2026-11-16");
+  assert.ok(!readSource().includes("Daily Market Analysis OK"), "the old subject text is gone");
+});
+check("final button: 'Download Dashboard Report' appears once, last among the content, only with a verified same-date link; the old introductory section and the deliverables section are gone", () => {
+  const w = world(); sentReport(w, withIntel(INTEL(), REPORT_LINK)); const html = lastMail(w).htmlBody, text = textOf(html);
+  assert.equal(html.split("Download Dashboard Report").length - 1, 1); assert.ok(html.indexOf("Data confidence") < html.indexOf("Download Dashboard Report") && html.indexOf("Download Dashboard Report") < html.indexOf("Observations and labels are rule-based"));
+  for (const gone of ["Interactive market report", "Open the full interactive dashboard in your browser", "Open the interactive market report", "Google Sheets", "Deliverables", "Workflow run", "Executed:", "downloadable file", "Download the report, dashboard and CSV"]) assert.ok(!text.includes(gone), "removed content is still there: " + gone);
+  assert.ok(html.includes("Executive dashboard") && html.includes("Latest figures"), "the title, KPI cards and figures stay"); assert.ok(!html.includes(ARTIFACT_URL) && !html.includes(WORKFLOW_URL));
+});
+check("self_check: the web app reports report_intelligence_supported true next to the existing capability flags", () => {
+  const w = world(); const r = w.call({ action: "self_check", token: SECRET }); assert.equal(r.report_intelligence_supported, true); assert.equal(r.report_ohlc_supported, true); assert.equal(r.report_link_supported, true); assert.equal(r.report_evidence_supported, true);
 });
 
 console.log(`\n${passed}/${passed + failed} Apps Script (Code.gs) checks passed`);

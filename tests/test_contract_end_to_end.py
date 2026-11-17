@@ -73,7 +73,7 @@ def _():
     assert result(folder, "verify_analysis")["matches"] is True and result(folder, "verify_analysis")["rows_found"] == 2
     now = state(); assert now["headings"] == HEADINGS and now["rows"] == row_values(folder), (now["rows"], row_values(folder))
     assert isinstance(now["rows"][0][0], str) and now["rows"][0][0] == "2026-10-27" and [r[1] for r in now["rows"]] == ["BTC", "ETH"] and all(isinstance(c, float) for c in now["rows"][0][2:7])
-    assert len(now["mail"]) == 1 and now["mail"][0]["subject"] == "Daily Market Analysis OK - 2026-10-27", now["mail"]
+    assert len(now["mail"]) == 1 and now["mail"][0]["subject"] == "Bitcoin & Ethereum Market Intelligence | 2026-10-27", now["mail"]
     body = now["mail"][0]["body"]; assert "Spreadsheet: updated and verified" in body and RUN_URL in body and "strong positive" in body and "Dubai" in body and "0.928089" in body, body
     assert result(folder, "send_success_email")["email_status"] == "sent" and result(folder, "send_success_email")["sheet_status"] == "ok"
 
@@ -192,15 +192,15 @@ def raw_post(payload):
     """A request sent straight to the web app, bypassing the client's own checks (to judge Code.gs's validation by itself)."""
     request = urllib.request.Request(URL, data=json.dumps(payload).encode(), method="POST", headers={"Content-Type": "application/json"}); return json.loads(OPENER.open(request, timeout=30).read())
 
-@R.register("report flow against the REAL Code.gs: ONE e-mail with an HTML body and the three charts as inline PNG images - the very bytes the client built - the plain-text part, the artifact link and the run link; the result records email_format html")
+@R.register("report flow against the REAL Code.gs: ONE e-mail with an HTML body and the three charts as inline PNG images - the very bytes the client built - the plain-text part and the market intelligence section (no deliverables section, no artifact or run link in the HTML); the result records email_format html")
 def _():
     import base64, hashlib
     reset(); folder = prepared(); assert report_flow(folder) == [0, 0, 0]; mail = state()["mail"]; assert len(mail) == 1, len(mail); m = mail[0]
-    assert m["subject"] == "Daily Market Analysis OK - 2026-10-27" and m["htmlBody"].startswith("<!DOCTYPE html>") and sorted(m["inlineImages"]) == ["chart_drawdown", "chart_indexed", "chart_returns"]
+    assert m["subject"] == "Bitcoin & Ethereum Market Intelligence | 2026-10-27" and m["htmlBody"].startswith("<!DOCTYPE html>") and sorted(m["inlineImages"]) == ["chart_drawdown", "chart_indexed", "chart_returns"]
     charts = stored_report(folder)["report"]["charts"]
     for chart in charts:
         image = m["inlineImages"]["chart_" + chart["id"]]; data = base64.b64decode(chart["png_base64"]); assert image["contentType"] == "image/png" and image["head"] == "89504e470d0a1a0a" and image["size"] == len(data) and image["sha256"] == hashlib.sha256(data).hexdigest(), chart["id"]
-    html = m["htmlBody"]; assert ARTIFACT_URL in html and RUN_URL in html and "80,800.90" in html and "2,347.34" in html and "17 of 17" in html and "MISSING" not in html and "0.928089" in html, html[:300]
+    html = m["htmlBody"]; assert ARTIFACT_URL not in html and RUN_URL not in html and "Market Intelligence &amp; Forward-Looking Scenarios" in html and "Pearson correlation of returns" in html and "80,800.90" in html and "2,347.34" in html and "17 of 17" in html and "MISSING" not in html and "0.928089" in html, html[:300]
     assert RUN_URL in m["body"] and ARTIFACT_URL in m["body"] and "strong positive" in m["body"]
     sent = result(folder, "send_success_report"); assert (sent["success"], sent["email_status"], sent["email_format"], sent["sheet_status"]) == (True, "sent", "html", "ok"), sent
     print(f"    measured: HTML {len(html)} characters, charts {[m['inlineImages']['chart_' + c['id']]['size'] for c in charts]} bytes")

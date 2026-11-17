@@ -47,6 +47,7 @@ const READ_BACK_TOLERANCE = 1e-12;
 // success report (send_success_report): the HTML e-mail with three small PNG charts that the web app builds itself from validated fields
 const ARTIFACT_URL_PATTERN = /^https:\/\/github\.com\/rizwana-qa\/market-data-quality-pipeline\/actions\/runs\/(\d{1,20})\/artifacts\/\d{1,20}$/;
 // The permanent GitHub Pages report of one analysis date: this repository's Pages site, the dated folder, one fixed file name, nothing after it.
+const INTELLIGENCE_SCENARIOS = ['Bullish', 'Neutral', 'Bearish'];
 const REPORT_URL_PATTERN = /^https:\/\/rizwana-qa\.github\.io\/market-data-quality-pipeline\/reports\/(\d{4}-\d{2}-\d{2})\/market_intelligence_report\.html$/;
 const UTC_TIME_PATTERN = /^(\d{4}-\d{2}-\d{2}) ([01]\d|2[0-3]):[0-5]\d:[0-5]\d UTC$/;
 const BASE64_PATTERN = /^[A-Za-z0-9+\/]+={0,2}$/;
@@ -62,7 +63,7 @@ const MAX_REPORT_ROWS = 400;
 const WINDOW_DAYS = 30;
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
 const REPORT_REQUIRED_KEYS = ['meta', 'assets', 'pair', 'coverage', 'charts'];
-const REPORT_OPTIONAL_KEYS = ['comparison', 'validation', 'ohlc'];     // sent by newer clients; a report without them (an older client) is still accepted and is shown with the completeness wording only
+const REPORT_OPTIONAL_KEYS = ['comparison', 'validation', 'ohlc', 'intelligence'];     // sent by newer clients; a report without them (an older client) is still accepted and is shown with the completeness wording only
 const VALIDATION_OUTCOMES = ['PASS', 'FAIL', 'BLOCKED', 'NOT RUN', 'INCONCLUSIVE'];
 const VALIDATION_SEVERITIES = ['ERROR', 'WARNING'];
 const STRONGER_VALUES = ['BTC', 'ETH', 'equal'];
@@ -499,7 +500,33 @@ function validateReport_(report, runId) {
   if (hasOwn_(report, 'comparison')) validateComparison_(report.comparison);
   if (hasOwn_(report, 'validation')) validateValidation_(report.validation, runId);
   if (hasOwn_(report, 'ohlc')) validateOhlc_(report.ohlc);
+  if (hasOwn_(report, 'intelligence')) validateIntelligence_(report.intelligence);
   return report;
+}
+
+// intelligence: the market intelligence section, calculated by the client from the validated dataset (deterministic Python). Only its shape and its text are checked here: exact keys, short plain text
+// (no angle brackets, no control characters), at most five label/value rows per subsection and exactly the Bullish, Neutral and Bearish scenarios in that order. Nothing is recalculated or interpreted.
+function validateIntelligence_(part) {
+  requireExactKeys_(part, ['correlation', 'relative_strength', 'risk', 'scenarios', 'interpretation', 'disclaimer']);
+  ['correlation', 'relative_strength', 'risk'].forEach(function (name) {
+    requireExactKeys_(part[name], ['rows', 'text']);
+    if (!Array.isArray(part[name].rows) || part[name].rows.length > 5) throw invalid_();
+    part[name].rows.forEach(function (row) {
+      if (!Array.isArray(row) || row.length !== 2) throw invalid_();
+      validateExceptionText_(row[0], 70);
+      validateExceptionText_(row[1], 70);
+    });
+    validateExceptionText_(part[name].text, 600);
+  });
+  if (!Array.isArray(part.scenarios) || part.scenarios.length !== INTELLIGENCE_SCENARIOS.length) throw invalid_();
+  part.scenarios.forEach(function (scenario, index) {
+    requireExactKeys_(scenario, ['name', 'evidence', 'supports', 'weakens']);
+    if (scenario.name !== INTELLIGENCE_SCENARIOS[index]) throw invalid_();
+    ['evidence', 'supports', 'weakens'].forEach(function (key) { validateExceptionText_(scenario[key], 600); });
+  });
+  requireExactKeys_(part.interpretation, ['divergence', 'risk_signal', 'monitor']);
+  ['divergence', 'risk_signal', 'monitor'].forEach(function (key) { validateExceptionText_(part.interpretation[key], 600); });
+  validateExceptionText_(part.disclaimer, 600);
 }
 
 // Open, high, low and close of the latest day, both assets: exact keys, positive numbers, open and close inside the day's range. handleSuccessReport_ also checks them against the analysis date and the closes of the summary.
@@ -682,7 +709,7 @@ function handleSuccessEmail_(request, secret) {
     const cache = CacheService.getScriptCache();
     const dedupeKey = 'ok:' + runId + ':' + date;
     if (cache.get(dedupeKey)) return { sheet_status: 'ok', email_status: 'skipped_duplicate' };
-    const message = { to: recipient, subject: 'Daily Market Analysis OK - ' + date, body: successBody_(date, validation, update, summary, runId, url, secret), name: 'Daily Market Analysis' };
+    const message = { to: recipient, subject: reportSubject_(date), body: successBody_(date, validation, update, summary, runId, url, secret), name: 'Daily Market Analysis' };
     sendMail_(message, 'ok', secret);
     return recordSent_(cache, dedupeKey, { sheet_status: 'ok', email_status: 'sent' });
   });
@@ -712,7 +739,7 @@ function handleSuccessReport_(request, secret) {
     const cache = CacheService.getScriptCache();
     const dedupeKey = 'ok:' + runId + ':' + date;
     if (cache.get(dedupeKey)) return { sheet_status: 'ok', email_status: 'skipped_duplicate' };
-    const subject = 'Daily Market Analysis OK - ' + date;
+    const subject = reportSubject_(date);
     const text = successBody_(date, validation, update, summary, runId, url, secret) + '\n\nData fetched from Kraken (UTC): ' + report.meta.data_fetched + '\n\nDeliverables (HTML dashboard, report and CSV; GitHub sign-in required): ' + artifactUrl + reportLinkText_(reportLink);
     const format = sendReportMail_(recipient, subject, text, { date: date, validation: validation, reportStatus: rows[0].values[8], update: update, summary: summary, runId: runId, url: url, artifactUrl: artifactUrl, reportLink: reportLink, report: report }, secret);
     return recordSent_(cache, dedupeKey, { sheet_status: 'ok', email_status: 'sent', email_format: format });
@@ -722,6 +749,10 @@ function handleSuccessReport_(request, secret) {
 // Records that the success e-mail of this run and date has gone out (the duplicate protection). The e-mail HAS been sent when this runs, so a failure here must never become an error reply:
 // the client repeats INTERNAL_ERROR and the e-mail would go out again. It is reported as email_status sent_dedup_failed instead (success true, no error code), and logged without the
 // provider's own text. Nothing is retried here either.
+function reportSubject_(date) {                                    // date is the validated analysis date of the request, never a fixed value
+  return 'Bitcoin & Ethereum Market Intelligence | ' + date;
+}
+
 function recordSent_(cache, key, result) {
   try {
     cache.put(key, '1', DEDUPE_SECONDS);
@@ -789,7 +820,7 @@ function handleSelfCheck_(request) {
   const emailValid = EMAIL_PATTERN.test(readProperty_('EMAIL_TO'));
   const sheetNameMatches = hasExpectedName ? properties.SHEET_NAME && readProperty_('SHEET_NAME') === request.expected_sheet_name : true;
   const ok = CONFIG_PROPERTIES.every(function (name) { return properties[name]; }) && spreadsheetFound && sheetFound && headersOk && emailValid && sheetNameMatches;
-  const result = { success: ok, properties: properties, spreadsheet_found: spreadsheetFound, sheet_found: sheetFound, headers_ok: headersOk, email_valid: emailValid, report_evidence_supported: true, report_link_supported: true, report_ohlc_supported: true };   // tells the client (before it writes anything) that this script accepts the comparison and validation parts of the report, and the optional report_url / report_link_status
+  const result = { success: ok, properties: properties, spreadsheet_found: spreadsheetFound, sheet_found: sheetFound, headers_ok: headersOk, email_valid: emailValid, report_evidence_supported: true, report_link_supported: true, report_ohlc_supported: true, report_intelligence_supported: true };   // tells the client (before it writes anything) that this script accepts the comparison and validation parts of the report, and the optional report_url / report_link_status
   if (hasExpectedName) result.sheet_name_matches = Boolean(sheetNameMatches);
   if (!ok) { result.error = 'NOT_CONFIGURED'; result.message = MESSAGES.NOT_CONFIGURED; }
   return result;
@@ -1056,7 +1087,7 @@ function chartSection_(chart) {
 }
 
 function linkButton_(href, label) {
-  return '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr><td bgcolor="' + NAVY2 + '" style="background-color:' + NAVY2 + ';padding:10px 18px;"><a href="' + escapeHtml_(href) + '" style="font-family:' + FONT + ';font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none;">' + escapeHtml_(label) + '</a></td></tr></table>';
+  return '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;"><tr><td bgcolor="' + NAVY2 + '" style="background-color:' + NAVY2 + ';padding:10px 18px;"><a href="' + escapeHtml_(href) + '" target="_blank" rel="noopener noreferrer" style="font-family:' + FONT + ';font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none;">' + escapeHtml_(label) + '</a></td></tr></table>';
 }
 
 function chartById_(report, id) {
@@ -1111,8 +1142,6 @@ function reportHtml_(d, secret) {
     kpiCard_('BTC \u00b7 30-return performance', signedPercent_(report.assets.btc.return_30d), toneOnNavy_(report.assets.btc.return_30d), meta.rows + ' closes \u00b7 first to latest', AMBER, 'left') +
     kpiCard_('ETH \u00b7 30-return performance', signedPercent_(report.assets.eth.return_30d), toneOnNavy_(report.assets.eth.return_30d), meta.rows + ' closes \u00b7 first to latest', BLUE, 'right') +
     '</tr></table></td></tr>');
-  const linkSection = reportLinkSection_(d.reportLink);
-  if (linkSection) parts.push(linkSection);                         // nothing is added for an older client, so its e-mail keeps its old content
   parts.push(section_('Market brief', brief.join('') + (observations ? '<ul style="margin:0 0 12px 18px;padding:0;font-family:' + FONT + ';font-size:13px;line-height:19px;color:' + INK + ';">' + observations + '</ul>' : '') +
     text_('font-size:11px;line-height:16px;color:' + MUTED + ';padding-bottom:12px;', 'Descriptive labels for this 30-day sample only, not advice.'), '02 &middot; Market intelligence'));
   const ohlcBlock = ohlcSection_(report);
@@ -1132,13 +1161,12 @@ function reportHtml_(d, secret) {
   parts.push(section_('How the assets moved together', table_('100%', 'padding-bottom:12px;', relation.join('')) +
     text_('font-size:11px;line-height:16px;color:' + MUTED + ';padding-bottom:6px;', 'The 30-day correlation is the primary measure. A correlation describes this sample only; it does not guarantee diversification and does not predict future co-movement.') +
     text_('font-size:11px;line-height:16px;color:' + MUTED + ';padding-bottom:12px;', escapeHtml_(thresholdsText_())), '07 &middot; Cross-asset relationship'));
+  const intelligenceBlock = intelligenceSection_(report);
+  if (intelligenceBlock) parts.push(intelligenceBlock);               // only a newer client sends the intelligence part
   parts.push(confidenceSection_(report));
-  parts.push(section_('Google Sheets and deliverables', table_('100%', 'padding-bottom:6px;', metricRow_('Google Sheets', 'updated and verified by reading the rows back (' + d.update.rows_inserted + ' inserted, ' + d.update.rows_updated + ' updated)') +
-    metricRow_('Data fetched', meta.data_fetched) + metricRow_('Report generated', meta.generated_at)) +
-    text_('font-size:13px;line-height:19px;color:' + INK + ';padding:10px 0 10px 0;', deliverablesText_(d.reportLink)) +
-    linkButton_(d.artifactUrl, d.reportLink.outcome === 'none' ? 'Download the dashboard, report and CSV' : 'Download the report, dashboard and CSV') +'<p style="margin:12px 0 0 0;font-family:' + FONT + ';font-size:13px;line-height:19px;color:' + INK + ';">Workflow run ' + escapeHtml_(d.runId) + ': <a href="' + escapeHtml_(d.url) + '" style="color:' + NAVY2 + ';">' + escapeHtml_(d.url) + '</a></p>', '09 &middot; Deliverables'));
-  parts.push('<tr><td class="pad" bgcolor="' + SOFT + '" style="background-color:' + SOFT + ';padding:16px 24px 20px 24px;border-top:1px solid ' + LINE + ';">' + text_('font-size:12px;line-height:18px;color:' + MUTED + ';', 'Executed: ' + escapeHtml_(timesText_())) +
-    text_('font-size:12px;line-height:18px;color:' + MUTED + ';padding-top:4px;', 'Observations and labels are rule-based descriptions of this sample; no AI model produced them.') +
+  const cta = reportCta_(d.reportLink);
+  if (cta) parts.push(cta);                                          // the one report button, after all analytical content
+  parts.push('<tr><td class="pad" bgcolor="' + SOFT + '" style="background-color:' + SOFT + ';padding:16px 24px 20px 24px;border-top:1px solid ' + LINE + ';">' + text_('font-size:12px;line-height:18px;color:' + MUTED + ';', 'Observations and labels are rule-based descriptions of this sample; no AI model produced them.') +
     text_('font-size:12px;line-height:18px;color:' + MUTED + ';padding-top:4px;', 'Educational use only. Not financial advice.') +
     text_('font-size:12px;line-height:18px;color:' + NAVY + ';padding-top:8px;font-weight:bold;', 'Digital Asset Intelligence &middot; Created by Rizwana Zahoor') + '</td></tr>');
   parts.push('</table>', '</td></tr></table>', '</body>', '</html>');
@@ -1161,19 +1189,46 @@ function ohlcSection_(report) {
   return section_('Market snapshot', text_('font-size:12px;line-height:17px;color:' + MUTED + ';padding-bottom:8px;', 'Latest completed UTC day, ' + escapeHtml_(o.date) + '. Open, high, low and close in USD, from the Kraken daily candles.') + grid, '03 &middot; Trading range');
 }
 
-function reportLinkSection_(link) {
+// The ONE report button, at the very end of the analysis. 'verified': the exact dated Pages report of this run, opened in a new tab (a link cannot force a file download). 'unavailable': the page could not be
+// confirmed online, so there is no link at all (no artifact and no older report as a substitute). 'none' (an older client): nothing is added.
+function reportCta_(link) {
   if (link.outcome === 'none') return '';
   if (link.outcome === 'verified') {
-    return section_('Interactive market report', linkButton_(link.url, 'Open the interactive market report') +
-      text_('font-size:12px;line-height:18px;color:' + MUTED + ';padding-top:8px;', 'Opens the full interactive dashboard in your browser.'));
+    return '<tr><td class="pad" style="padding:16px 24px 22px 24px;border-top:1px solid ' + LINE + ';">' + linkButton_(link.url, 'Download Dashboard Report') +
+      text_('font-size:12px;line-height:18px;color:' + MUTED + ';padding-top:8px;', 'Opens the detailed interactive HTML report in a new browser tab.') + '</td></tr>';
   }
-  return section_('Interactive market report', text_('font-size:13px;line-height:19px;color:' + INK + ';padding-bottom:6px;',
-    'The interactive market report could not be confirmed online when this e-mail was sent. It is available in the downloadable workflow artifact below; GitHub sign-in is required.'));
+  return '<tr><td class="pad" style="padding:16px 24px 22px 24px;border-top:1px solid ' + LINE + ';">' +
+    text_('font-size:13px;line-height:19px;color:' + INK + ';', 'The detailed interactive report could not be confirmed online when this e-mail was sent, so no link is included.') + '</td></tr>';
 }
 
-function deliverablesText_(link) {
-  if (link.outcome === 'none') return 'The full interactive HTML dashboard, the Markdown report and the CSV data are in one downloadable file. Open the page, sign in to GitHub, download the archive and open the HTML file in a browser. The files are kept for 14 days.';
-  return 'The interactive market report, the interactive HTML dashboard, the Markdown report and the CSV data are in one downloadable file. Open the page, sign in to GitHub, download the archive and open the HTML files in a browser. The files are kept for 14 days.';
+function intelligenceRows_(rows) {
+  return rows.length === 0 ? '' : table_('100%', 'padding-bottom:6px;', rows.map(function (row) { return metricRow_(row[0], row[1]); }).join(''));
+}
+
+function intelligenceSubheading_(label) {
+  return text_('font-size:13px;line-height:19px;font-weight:bold;color:' + NAVY + ';padding:10px 0 4px 0;', escapeHtml_(label));
+}
+
+// The market intelligence section: five subsections written from the client's deterministic calculations. Historical observations first, then the illustrative scenarios (clearly labelled as such), then the interpretation.
+function intelligenceSection_(report) {
+  if (!hasOwn_(report, 'intelligence')) return '';
+  const i = report.intelligence;
+  const para = function (value) { return text_('font-size:13px;line-height:19px;color:' + INK + ';padding-bottom:6px;', escapeHtml_(value)); };
+  const scenarioColours = { Bullish: GOOD, Neutral: AMBER, Bearish: BAD };
+  const scenarios = i.scenarios.map(function (s) {
+    return '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin-bottom:10px;"><tr><td width="4" bgcolor="' + scenarioColours[s.name] + '" style="width:4px;background-color:' + scenarioColours[s.name] + ';font-size:1px;line-height:1px;">&nbsp;</td>' +
+      '<td style="padding:6px 0 6px 12px;">' + text_('font-size:13px;line-height:18px;font-weight:bold;color:' + NAVY + ';padding-bottom:3px;', escapeHtml_(s.name + ' scenario (illustrative)')) +
+      text_('font-size:12px;line-height:18px;color:' + INK + ';padding-bottom:3px;', '<strong>Evidence:</strong> ' + escapeHtml_(s.evidence)) +
+      text_('font-size:12px;line-height:18px;color:' + INK + ';padding-bottom:3px;', '<strong>Could support it:</strong> ' + escapeHtml_(s.supports)) +
+      text_('font-size:12px;line-height:18px;color:' + INK + ';', '<strong>Would weaken it:</strong> ' + escapeHtml_(s.weakens)) + '</td></tr></table>';
+  }).join('');
+  const inner = intelligenceSubheading_('1. BTC' + String.fromCharCode(8211) + 'ETH correlation (historical)') + intelligenceRows_(i.correlation.rows) + para(i.correlation.text) +
+    intelligenceSubheading_('2. Relative strength and momentum (historical)') + intelligenceRows_(i.relative_strength.rows) + para(i.relative_strength.text) +
+    intelligenceSubheading_('3. Volatility and risk (historical)') + intelligenceRows_(i.risk.rows) + para(i.risk.text) +
+    intelligenceSubheading_('4. Forward-looking scenarios (illustrative, not predictions)') + scenarios +
+    intelligenceSubheading_('5. Decision-relevant interpretation') + para('Divergence or similarity: ' + i.interpretation.divergence) + para('Principal risk signal: ' + i.interpretation.risk_signal) + para('Indicator to monitor next: ' + i.interpretation.monitor) +
+    text_('font-size:11px;line-height:16px;color:' + MUTED + ';padding:2px 0 12px 0;', escapeHtml_(i.disclaimer));
+  return section_('Market Intelligence & Forward-Looking Scenarios', inner, '08 &middot; Intelligence');
 }
 
 function reportLinkText_(link) {

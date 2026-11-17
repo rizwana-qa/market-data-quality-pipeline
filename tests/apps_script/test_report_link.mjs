@@ -1,7 +1,6 @@
 // Tests for the optional report link of send_success_report in apps_script/Code.gs (report_url, report_link_status, report_link_supported), run in Node against fake Google services.
 // Usage: node tests/apps_script/test_report_link.mjs     (set CODE_GS_UNDER_TEST to test another copy of the script)
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
 import { makeWorld, readSource, SECRET, upsertPayload, reportPayload, ARTIFACT_URL } from "./harness.mjs";
 
 let pass = 0, fail = 0;
@@ -9,11 +8,11 @@ const check = (name, fn) => { try { fn(); pass++; console.log("PASS", name); } c
 const BASE = "https://rizwana-qa.github.io/market-data-quality-pipeline/reports/";
 const url = (d) => BASE + d + "/market_intelligence_report.html";
 const D = "2026-10-27";
-const BUTTON = "Open the interactive market report";
-const SUPPORT = "Opens the full interactive dashboard in your browser.";
+const BUTTON = "Download Dashboard Report";
+const SUPPORT = "Opens the detailed interactive HTML report in a new browser tab.";
 const UNAVAILABLE = "could not be confirmed online";
-const ARTIFACT_BUTTON = "Download the report, dashboard and CSV";
-const LEGACY_BUTTON = "Download the dashboard, report and CSV";
+const OLD_WORDING = ["Interactive market report", "Open the interactive market report", "Download the report, dashboard and CSV", "Download the dashboard, report and CSV", "Google Sheets and deliverables", "Workflow run", "Executed:"];
+const hrefsOf = (h) => [...h.matchAll(/href="([^"]*)"/g)].map((x) => x[1]);
 
 const fresh = () => { const w = makeWorld(); w.call(upsertPayload()); return w; };
 const html = (m) => String(m.htmlBody || "");
@@ -26,40 +25,37 @@ check("source: Code.gs stays plain ASCII and holds the exact Pages pattern for t
 });
 
 // ---- backward compatibility
-check("legacy: neither field -> an HTML e-mail with the unchanged deliverables wording and button, no report text, no log line", () => {
+check("legacy: neither field -> an HTML e-mail with no link, no button, no report-access text and no log line (an older client keeps a link-free e-mail)", () => {
   const { w, r, unchanged } = send({}); assert.equal(r.success, true); assert.equal(r.email_status, "sent"); assert.equal(r.email_format, "html"); assert.ok(unchanged);
-  const m = w.state.mail.sent[0]; assert.ok(html(m).includes(LEGACY_BUTTON) && html(m).includes('href="' + ARTIFACT_URL + '"'));
-  assert.ok(html(m).includes("The full interactive HTML dashboard, the Markdown report and the CSV data are in one downloadable file."));
-  assert.ok(!html(m).includes("Interactive market report") && !html(m).includes(BUTTON) && !html(m).includes(UNAVAILABLE) && !html(m).includes("github.io")); assert.ok(!text(m).includes("Interactive market report") && !text(m).includes(UNAVAILABLE)); assert.ok(!logsText(w).includes("report link"));
+  const m = w.state.mail.sent[0]; assert.deepEqual(hrefsOf(html(m)), []); assert.ok(!html(m).includes(BUTTON) && !html(m).includes(UNAVAILABLE) && !html(m).includes("github.io"));
+  for (const gone of OLD_WORDING) assert.ok(!html(m).includes(gone), "the reader-facing e-mail must not carry: " + gone);
+  assert.ok(!text(m).includes("Interactive market report") && !text(m).includes(UNAVAILABLE)); assert.ok(!logsText(w).includes("report link"));
 });
 
-check("legacy: the e-mail of a request without link fields is byte for byte the e-mail the script sent before this feature (SHA-256 of the HTML and of the plain text, subject, 3 inline charts)", () => {
-  const { w } = send({}); const m = w.state.mail.sent[0]; const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
-  assert.equal(m.subject, "Daily Market Analysis OK - 2026-10-27"); assert.equal(Object.keys(m.inlineImages).length, 3);
-  // the only later change is the data-freshness line (the validated fetch time); with exactly that line removed the e-mail is the pinned original
-  const fresh = /<p style="[^"]*">Data fetched from Kraken \(UTC\): <strong style="color:#ffffff;">[^<]*<\/strong><\/p>/;
-  assert.ok(fresh.test(html(m))); assert.ok(text(m).includes("\n\nData fetched from Kraken (UTC): 2026-10-28 02:15:12 UTC"));
-  assert.equal(sha(html(m).replace(fresh, "")), "86bd317c1c553697f91a78d23520fae3f6f1741e9e99c5d85f4921264a2e5d98");
-  assert.equal(sha(text(m).replace("\n\nData fetched from Kraken (UTC): 2026-10-28 02:15:12 UTC", "")), "a262b2eef3e559a8c042f9f289cb1184cdd3be58a8b2e3aeb041cc09982892c0");
+check("legacy: subject and structure of the e-mail of a request without link fields - the dynamic subject, 3 inline charts, the freshness line in the header and the plain-text freshness line", () => {
+  const { w } = send({}); const m = w.state.mail.sent[0];
+  assert.equal(m.subject, "Bitcoin & Ethereum Market Intelligence | 2026-10-27"); assert.equal(Object.keys(m.inlineImages).length, 3);
+  assert.ok(/Data fetched from Kraken \(UTC\): <strong style="color:#ffffff;">2026-10-28 02:15:12 UTC<\/strong>/.test(html(m))); assert.ok(text(m).includes("\n\nData fetched from Kraken (UTC): 2026-10-28 02:15:12 UTC"));
 });
 
 // ---- verified link
-check("verified: the primary button points at the exact same-date Pages report, with the supporting sentence; the artifact stays as a secondary download; no script", () => {
+check("verified: ONE button 'Download Dashboard Report' points at the exact same-date Pages report, opens in a new tab, sits after all analytical content; no artifact or workflow link; no script", () => {
   const { w, r, unchanged } = send({ report_url: url(D) }); assert.equal(r.email_status, "sent"); assert.equal(r.email_format, "html"); assert.ok(unchanged);
   const m = w.state.mail.sent[0], h = html(m);
-  assert.ok(h.includes('href="' + url(D) + '"') && h.includes(BUTTON) && h.includes(SUPPORT) && !h.includes(UNAVAILABLE));
-  assert.equal(h.split(url(D)).length - 1, 1, "the report address appears exactly once in the HTML");
-  assert.ok(h.includes('href="' + ARTIFACT_URL + '"') && h.includes(ARTIFACT_BUTTON) && h.includes("The interactive market report, the interactive HTML dashboard"));
-  assert.ok(h.indexOf(BUTTON) < h.indexOf("Market brief"), "the report button comes first");
-  assert.ok(!/<script/i.test(h)); assert.ok(text(m).includes("Interactive market report: " + url(D)) && text(m).includes(ARTIFACT_URL)); assert.ok(!logsText(w).includes("report link"));
+  assert.deepEqual(hrefsOf(h), [url(D)], "the only link in the e-mail is the dated report"); assert.equal(h.split(BUTTON).length - 1, 1); assert.ok(h.includes(SUPPORT) && !h.includes(UNAVAILABLE));
+  assert.ok(h.includes('href="' + url(D) + '" target="_blank" rel="noopener noreferrer"'), "opens in a new tab"); assert.ok(!/download=/i.test(h), "no forced download is claimed");
+  for (const before of ["Market brief", "Latest figures", "cid:chart_returns", "How the assets moved together", "Data confidence"]) assert.ok(h.indexOf(before) < h.indexOf(BUTTON), before + " comes before the button");
+  assert.ok(h.indexOf(BUTTON) < h.indexOf("Observations and labels are rule-based"), "the button comes before the closing notes");
+  for (const gone of OLD_WORDING) assert.ok(!h.includes(gone), "the reader-facing e-mail must not carry: " + gone); assert.ok(!h.includes(ARTIFACT_URL));
+  assert.ok(!/<script/i.test(h)); assert.ok(text(m).includes("Interactive market report: " + url(D))); assert.ok(!logsText(w).includes("report link"));
 });
 
 // ---- client-reported unavailable
-check("unavailable: no Pages button anywhere; the notice names the artifact, which keeps its own button and sign-in note", () => {
+check("unavailable: no link of any kind - no Pages button, no artifact, no workflow run; a plain notice only", () => {
   const { w, r, unchanged } = send({ report_link_status: "unavailable" }); assert.equal(r.email_status, "sent"); assert.equal(r.email_format, "html"); assert.ok(unchanged);
   const m = w.state.mail.sent[0], h = html(m);
-  assert.ok(h.includes(UNAVAILABLE) && h.includes("downloadable workflow artifact") && h.includes("GitHub sign-in is required") && h.includes('href="' + ARTIFACT_URL + '"') && h.includes(ARTIFACT_BUTTON));
-  assert.ok(!h.includes(BUTTON) && !h.includes("github.io") && !h.includes(SUPPORT)); assert.ok(text(m).includes(UNAVAILABLE) && text(m).includes(ARTIFACT_URL) && !text(m).includes("github.io"));
+  assert.ok(h.includes(UNAVAILABLE) && h.includes("so no link is included")); assert.deepEqual(hrefsOf(h), []); assert.ok(!h.includes(BUTTON) && !h.includes("github.io") && !h.includes(SUPPORT) && !h.includes("workflow artifact"));
+  assert.ok(text(m).includes(UNAVAILABLE) && !text(m).includes("github.io"));
   assert.ok(!logsText(w).includes("report link"), "a client-reported 'unavailable' is normal and logs nothing");
 });
 
@@ -75,10 +71,10 @@ const badUrls = {
   "number": [5, "not_text"], "null": [null, "not_text"], "array": [[url(D)], "not_text"], "object": [{ u: url(D) }, "not_text"],
 };
 for (const [name, [value, reason]] of Object.entries(badUrls)) {
-  check("invalid report_url (" + name + "): sent as HTML with the artifact fallback, reason '" + reason + "' logged, value never echoed, sheet untouched", () => {
+  check("invalid report_url (" + name + "): sent as HTML without any link (no fallback link), reason '" + reason + "' logged, value never echoed, sheet untouched", () => {
     const { w, r, unchanged } = send({ report_url: value }); assert.equal(r.success, true); assert.equal(r.email_status, "sent"); assert.equal(r.email_format, "html"); assert.ok(unchanged); assert.equal(w.state.mail.sent.length, 1);
     const m = w.state.mail.sent[0], h = html(m), t = text(m), log = logsText(w);
-    assert.ok(h.includes(UNAVAILABLE) && h.includes('href="' + ARTIFACT_URL + '"') && !h.includes(BUTTON) && t.includes(UNAVAILABLE) && t.includes(ARTIFACT_URL));
+    assert.ok(h.includes(UNAVAILABLE) && !h.includes(ARTIFACT_URL) && !h.includes(BUTTON) && t.includes(UNAVAILABLE) && t.includes(ARTIFACT_URL));
     assert.ok(log.includes("report link rejected (" + reason + ")"), log); assert.ok(!h.includes("github.io") && !t.includes("github.io"));
     const raw = typeof value === "string" ? value : JSON.stringify(value); if (raw.length > 8) assert.ok(!h.includes(raw) && !t.includes(raw) && !log.includes(raw), "the rejected value must not be echoed");
     assert.ok(!/<script/i.test(h));
