@@ -12,10 +12,12 @@ import binascii
 import json
 import math
 import re
+import statistics
 import struct
 import zlib
 from datetime import datetime, timezone
 
+import analysis
 import candle_rules
 import dashboard
 import run_evidence
@@ -43,7 +45,7 @@ ASSET_KEYS = {"return_7d", "return_14d", "return_30d", "volatility_annualised", 
 PAIR_KEYS = {"volatility_ratio", "joint_negative_days", "overlap_share"}
 META_KEYS = {"rows", "first_date", "data_fetched", "generated_at"}
 REPORT_KEYS = {"meta", "assets", "pair", "coverage", "charts"}
-OPTIONAL_KEYS = {"comparison", "validation", "ohlc"}
+OPTIONAL_KEYS = {"comparison", "validation", "ohlc", "intelligence"}
 COMPARISON_KEYS = {"stronger", "spread_pp", "correlation_7d", "correlation_14d"}
 VALIDATION_KEYS = {"run_id", "overall", "fields_total", "fields_validated", "instances_expected", "instances_evaluated", "instances_passed", "checks_total", "checks_passed", "assumptions", "exceptions"}
 EXCEPTION_KEYS = {"rule_id", "severity", "outcome", "field", "explanation"}
@@ -231,6 +233,166 @@ def comparison_of(btc_30d, eth_30d, correlation_7d, correlation_14d):
     return {"stronger": stronger, "spread_pp": spread_pp, "correlation_7d": short(correlation_7d), "correlation_14d": short(correlation_14d)}
 
 
+MATERIAL_DRAWDOWN_PP = 2.0                                      # two maximum drawdowns that differ by this many percentage points or more are called materially different
+INTEL_MAX_TEXT, INTEL_MAX_ROWS, INTEL_MAX_CELL = 420, 5, 70
+SCENARIO_NAMES = ("Bullish", "Neutral", "Bearish")
+INTEL_SECTIONS = ("correlation", "relative_strength", "risk")
+INTEL_DISCLAIMER = ("Historical observations are measured from the validated Kraken dataset. The scenarios are illustrative, conditional descriptions built from those measurements; "
+                    "they are not price predictions, targets or investment recommendations.")
+UNAVAILABLE_NOTE = "Unavailable: the validated dataset does not hold enough complete, aligned daily observations for this calculation."
+
+
+def _pc(value, signed=True):
+    return f"{value * 100:+.2f}%" if signed else f"{value * 100:.2f}%"
+
+
+def intelligence_figures(dataset):
+    """The numbers behind the market intelligence section, or None when the dataset cannot support them (fewer than 31 daily closes, or a missing or non-finite value in the window).
+
+    All of it is deterministic Python on the validated dataset: Pearson correlation of the aligned daily percentage returns (never of price levels), the 7-, 14- and 30-return performance,
+    the sample standard deviation of the daily returns (annualised as in the rest of the report), the largest fall from a previous high within the window and the current distance below
+    the window high. Nothing is estimated or filled in: a missing observation makes the whole calculation unavailable.
+    """
+    if len(dataset["rows"]) < WINDOW_DAYS + 1:
+        return None
+    window = dashboard.window_slice(dataset, WINDOW_DAYS)
+    returns, closes = window["returns"], window["closes"]
+    series = [*returns["BTC"], *returns["ETH"], *closes["BTC"], *closes["ETH"]]
+    if len(returns["BTC"]) != len(returns["ETH"]) or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in series):
+        return None
+    figures = {"observations": len(returns["BTC"]), "start": window["return_dates"][0], "end": window["return_dates"][-1], "close_start": window["dates"][0],
+               "correlation": analysis.pearson_correlation(returns["BTC"], returns["ETH"]), "assets": {}}
+    for asset in dashboard.ASSETS:
+        values, closing = returns[asset], closes[asset]
+        daily = analysis.daily_volatility(values)
+        figures["assets"][asset] = {
+            "r7": analysis.cumulative_return(closing[-8:]), "r14": analysis.cumulative_return(closing[-15:]), "r30": analysis.cumulative_return(closing),
+            "daily_vol": daily, "annual_vol": analysis.annualised_volatility(daily), "max_dd": analysis.max_drawdown(window["dates"], closing),
+            "current_dd": closing[-1] / max(closing) - 1, "positive_days": sum(1 for v in values if v > 0), "mean": statistics.fmean(values), "low_close": min(closing), "high_close": max(closing)}
+    figures["vol_ratio"] = analysis.volatility_ratio(figures["assets"]["ETH"]["daily_vol"], figures["assets"]["BTC"]["daily_vol"])
+    negative = {a: sum(1 for v in returns[a] if v < 0) for a in dashboard.ASSETS}
+    figures["joint_negative"] = analysis.count_joint_negative_days(returns["BTC"], returns["ETH"])
+    figures["overlap_share"] = analysis.classify_down_day_overlap(negative["BTC"], negative["ETH"], figures["joint_negative"])[1]
+    spread = round((figures["assets"]["ETH"]["r30"] - figures["assets"]["BTC"]["r30"]) * 100, 6)
+    figures["spread_pp"] = spread
+    figures["stronger"] = "equal" if abs(spread) < EQUAL_BELOW_PP else "ETH" if spread > 0 else "BTC"
+    return figures
+
+
+def _usd(value):
+    return f"${value:,.2f}"
+
+
+def intelligence_of(dataset):
+    """The 'intelligence' part of the e-mail report: ready-to-show rows and sentences for the five subsections, built only from intelligence_figures(). Historical observations and the forward-looking
+    scenarios are kept apart, correlation is never called causation, and a calculation that the data cannot support says 'Unavailable' instead of a number."""
+    f = intelligence_figures(dataset)
+    if f is None:
+        none = {"rows": [], "text": UNAVAILABLE_NOTE}
+        return {"correlation": none, "relative_strength": none, "risk": none,
+                "scenarios": [{"name": n, "evidence": UNAVAILABLE_NOTE, "supports": "Unavailable.", "weakens": "Unavailable."} for n in SCENARIO_NAMES],
+                "interpretation": {"divergence": UNAVAILABLE_NOTE, "risk_signal": UNAVAILABLE_NOTE, "monitor": UNAVAILABLE_NOTE}, "disclaimer": INTEL_DISCLAIMER}
+    b, e, n = f["assets"]["BTC"], f["assets"]["ETH"], f["observations"]
+    rho = f["correlation"]
+    label = analysis.classify_correlation(rho)
+    period = f"{f['start']} to {f['end']}"
+    if rho is None:
+        corr_text = f"Unavailable: a return series is constant over the {n} aligned daily returns, so the correlation is not defined. Correlation describes co-movement only and is not causation."
+        corr_value = "Unavailable"
+    else:
+        shape = "weak linear co-movement" if abs(rho) < analysis.CORRELATION_WEAK_BELOW else f"{label} co-movement"
+        corr_text = (f"Over {n} aligned daily percentage returns ({period}) the assets show {shape} (Pearson {rho:.2f}). It is calculated on returns, not price levels; "
+                     "it describes this sample only and is not causation.")
+        corr_value = f"{rho:.2f}"
+    correlation = {"rows": [["Window", f"{n} daily returns, {period}"], ["Valid observations", f"{n} of {n}"], ["Pearson correlation of returns", corr_value], ["Classification (rule R1)", label]], "text": corr_text}
+    if f["stronger"] == "equal":
+        lead = "The two 30-return performances are equal to two decimals, so neither asset was relatively stronger."
+    else:
+        lead = f"{f['stronger']} was the relatively stronger asset over the window ({_pc(f['assets'][f['stronger']]['r30'])} against {_pc(f['assets']['ETH' if f['stronger'] == 'BTC' else 'BTC']['r30'])}, a gap of {abs(f['spread_pp']):.2f} percentage points)."
+    mom = lambda a: "positive" if a["r7"] > 0 else "negative" if a["r7"] < 0 else "flat"
+    strength = {"rows": [["Performance, 30 returns", f"BTC {_pc(b['r30'])} / ETH {_pc(e['r30'])}"], ["Performance, 14 returns", f"BTC {_pc(b['r14'])} / ETH {_pc(e['r14'])}"],
+                         ["Performance, 7 returns", f"BTC {_pc(b['r7'])} / ETH {_pc(e['r7'])}"], ["Relatively stronger", f["stronger"] if f["stronger"] != "equal" else "Neither (equal)"]],
+                "text": f"{lead} Recent 7-return momentum is {mom(b)} for BTC and {mom(e)} for ETH. This describes what has happened; it does not imply that it will continue."}
+    ratio = f["vol_ratio"]
+    if ratio is None:
+        vol_line = "Unavailable: the BTC volatility is zero, so the ratio is not defined."
+    elif ratio >= analysis.VOLATILITY_RATIO_HIGH:
+        vol_line = f"ETH's realised volatility was materially higher ({ratio:.2f} times BTC's)."
+    elif ratio <= analysis.VOLATILITY_RATIO_LOW:
+        vol_line = f"BTC's realised volatility was materially higher (ETH was {ratio:.2f} times BTC's)."
+    else:
+        vol_line = f"Realised volatility was similar (ETH {ratio:.2f} times BTC)."
+    dd = lambda a: a["max_dd"][0]
+    gap = abs(dd(b) - dd(e)) * 100
+    if dd(b) == 0 and dd(e) == 0:
+        dd_line = "Neither asset fell from a previous high within the window."
+    elif gap >= MATERIAL_DRAWDOWN_PP:
+        dd_line = f"{'ETH' if dd(e) < dd(b) else 'BTC'} had the materially deeper maximum drawdown ({gap:.2f} percentage points deeper)."
+    else:
+        dd_line = f"The maximum drawdowns were similar (within {MATERIAL_DRAWDOWN_PP:.0f} percentage points)."
+    risk = {"rows": [["Realised volatility, annualised", f"BTC {_pc(b['annual_vol'], False)} / ETH {_pc(e['annual_vol'], False)}"], ["ETH / BTC volatility ratio", "Unavailable" if ratio is None else f"{ratio:.2f}"],
+                     ["Maximum drawdown", f"BTC {_pc(dd(b), False)} / ETH {_pc(dd(e), False)}"], ["Distance below window high", f"BTC {_pc(-b['current_dd'], False)} / ETH {_pc(-e['current_dd'], False)}"]],
+            "text": (f"{vol_line} {dd_line} Method: sample standard deviation of {n} daily returns ({period}) annualised over 365 days; maximum drawdown is the largest fall of the daily close from a "
+                     f"previous high among the {n + 1} closes from {f['close_start']}; a gap of {MATERIAL_DRAWDOWN_PP:.0f} points or more is called material.")}
+    drift = lambda a: "not defined (zero volatility)" if a["daily_vol"] == 0 else f"{abs(a['mean']) / a['daily_vol']:.2f}"
+    scenarios = [
+        {"name": "Bullish",
+         "evidence": f"7-return performance: BTC {_pc(b['r7'])}, ETH {_pc(e['r7'])}. Positive days of {n}: BTC {b['positive_days']}, ETH {e['positive_days']}. Mean daily return: BTC {_pc(b['mean'])}, ETH {_pc(e['mean'])}.",
+         "supports": f"Both 7-return performances stay positive and daily volatility stays at or below its window level (BTC {_pc(b['daily_vol'], False)}, ETH {_pc(e['daily_vol'], False)}).",
+         "weakens": f"Either 7-return performance turns negative, or a close falls below the window low (BTC {_usd(b['low_close'])}, ETH {_usd(e['low_close'])})."},
+        {"name": "Neutral",
+         "evidence": f"30-return performance: BTC {_pc(b['r30'])}, ETH {_pc(e['r30'])}. The mean daily return is {drift(b)} (BTC) and {drift(e)} (ETH) daily standard deviations in size.",
+         "supports": f"Daily returns stay within one daily standard deviation of zero (BTC {_pc(b['daily_vol'], False)}, ETH {_pc(e['daily_vol'], False)}), so no direction builds.",
+         "weakens": "Consecutive daily moves beyond those bands in the same direction, or a 7-return performance larger in size than the 30-return performance."},
+        {"name": "Bearish",
+         "evidence": f"Distance below window high: BTC {_pc(-b['current_dd'], False)}, ETH {_pc(-e['current_dd'], False)}. Both fell on {f['joint_negative']} of {n} days"
+                     + ("" if f["overlap_share"] is None else f" (down-day overlap {f['overlap_share']:.2f})") + ".",
+         "supports": "Both 7-return performances stay negative and down days keep coinciding.",
+         "weakens": f"Either 7-return performance turns positive, or closes recover above the window high (BTC {_usd(b['high_close'])}, ETH {_usd(e['high_close'])})."}]
+    if rho is None:
+        diverge = "No similarity or divergence can be stated because the correlation is not defined for this window."
+    elif abs(rho) >= analysis.CORRELATION_STRONG_FROM:
+        diverge = f"The most significant feature is similarity: the daily returns moved together ({label}, {rho:.2f})" + (f", while {f['stronger']} led by {abs(f['spread_pp']):.2f} percentage points over {n} returns." if f["stronger"] != "equal" else ".")
+    else:
+        diverge = f"The most significant feature is divergence: the co-movement was only {label} ({rho:.2f})" + (f" and {f['stronger']} led by {abs(f['spread_pp']):.2f} percentage points." if f["stronger"] != "equal" else ".")
+    deeper = "ETH" if dd(e) < dd(b) else "BTC"
+    worst = f["assets"][deeper]
+    risk_signal = ("No asset fell from a previous high within the window." if dd(b) == 0 and dd(e) == 0 else
+                   f"The principal risk signal is {deeper}'s maximum drawdown of {_pc(dd(worst), False)} (currently {_pc(-worst['current_dd'], False)} below its window high; annualised volatility {_pc(worst['annual_vol'], False)}).")
+    if rho is None or abs(rho) < analysis.CORRELATION_STRONG_FROM:
+        monitor = f"Monitor the BTC-ETH correlation of returns (now {'unavailable' if rho is None else format(rho, '.2f')}) for a move back toward or away from strong co-movement."
+    elif ratio is not None and (ratio >= analysis.VOLATILITY_RATIO_HIGH or ratio <= analysis.VOLATILITY_RATIO_LOW):
+        monitor = f"Monitor the ETH / BTC volatility ratio (now {ratio:.2f}) for a return to the {analysis.VOLATILITY_RATIO_LOW:.2f} to {analysis.VOLATILITY_RATIO_HIGH:.2f} band."
+    else:
+        leader = "BTC" if f["stronger"] in ("BTC", "equal") else "ETH"
+        monitor = f"Monitor the 7-return performance of {leader} against its 30-return performance ({_pc(f['assets'][leader]['r7'])} against {_pc(f['assets'][leader]['r30'])})."
+    return {"correlation": correlation, "relative_strength": strength, "risk": risk, "scenarios": scenarios,
+            "interpretation": {"divergence": diverge, "risk_signal": risk_signal, "monitor": monitor}, "disclaimer": INTEL_DISCLAIMER}
+
+
+def _check_intelligence(part):
+    _keys(part, {"correlation", "relative_strength", "risk", "scenarios", "interpretation", "disclaimer"}, "intelligence")
+    safe = lambda value, limit: isinstance(value, str) and 1 <= len(value) <= limit and value.isprintable() and not re.search(r"[<>]", value)
+    for name in INTEL_SECTIONS:
+        _keys(part[name], {"rows", "text"}, f"intelligence.{name}")
+        rows = part[name]["rows"]
+        if not isinstance(rows, list) or len(rows) > INTEL_MAX_ROWS or not safe(part[name]["text"], INTEL_MAX_TEXT + 160):
+            raise EmailReportError(f"intelligence.{name} is not valid")
+        for row in rows:
+            if not isinstance(row, list) or len(row) != 2 or not all(safe(cell, INTEL_MAX_CELL) for cell in row):
+                raise EmailReportError(f"intelligence.{name} has an invalid row")
+    scenarios = part["scenarios"]
+    if not isinstance(scenarios, list) or [s.get("name") if isinstance(s, dict) else None for s in scenarios] != list(SCENARIO_NAMES):
+        raise EmailReportError("intelligence.scenarios must be Bullish, Neutral and Bearish in that order")
+    for scenario in scenarios:
+        _keys(scenario, {"name", "evidence", "supports", "weakens"}, "an intelligence scenario")
+        if not all(safe(scenario[key], INTEL_MAX_TEXT) for key in ("evidence", "supports", "weakens")):
+            raise EmailReportError("an intelligence scenario is not valid")
+    _keys(part["interpretation"], {"divergence", "risk_signal", "monitor"}, "intelligence.interpretation")
+    if not all(safe(part["interpretation"][key], INTEL_MAX_TEXT) for key in part["interpretation"]) or not safe(part["disclaimer"], INTEL_MAX_TEXT):
+        raise EmailReportError("intelligence.interpretation is not valid")
+
+
 def _plain(text, limit):
     """Text that is safe to show: no control characters and no angle brackets, shortened, never empty."""
     cleaned = re.sub(r"[\x00-\x1f\x7f<>]", " ", str(text)).strip()
@@ -314,6 +476,7 @@ def build_report(outputs, generated_at):
         "charts": [_chart_entry(kind, *series[kind]) for kind in CHART_IDS],
         "comparison": comparison_of(metrics["cumulative_return"]["BTC"], metrics["cumulative_return"]["ETH"], shorter[7]["correlation"], shorter[14]["correlation"]),
         "ohlc": _ohlc(dataset),
+        "intelligence": intelligence_of(dataset),
     }
     validation = build_validation(outputs)
     if validation is not None:                                                      # without evidence there is no validation part, and the e-mail never shows a PASS
@@ -449,6 +612,8 @@ def check_report(report):
             _date(figures[key], f"assets.{asset}.{key}", nullable=True)
     if "ohlc" in report:
         _check_ohlc(report["ohlc"])
+    if "intelligence" in report:
+        _check_intelligence(report["intelligence"])
     _keys(report["pair"], PAIR_KEYS, "pair")
     _finite(report["pair"]["volatility_ratio"], "pair.volatility_ratio", low=0, nullable=True)
     _finite(report["pair"]["joint_negative_days"], "pair.joint_negative_days", low=0, high=WINDOW_DAYS, integer=True)

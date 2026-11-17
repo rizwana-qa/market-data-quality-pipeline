@@ -919,7 +919,7 @@ def _():
     out = prepared_dir(); assert sorted(os.listdir(out)) == ["run_context.json", "send_success_email.json", "send_success_report.json", "upsert_analysis.json", "verify_analysis.json"], sorted(os.listdir(out))
     body, email = read_json(out, "send_success_report.json"), read_json(out, "send_success_email.json")
     assert body["action"] == "send_success_report" and set(body) == set(email) | {"report"} and all(body[key] == email[key] for key in email if key != "action") and "token" not in body and "artifact_url" not in body and "sheet_update" not in body
-    assert set(body["report"]) == {"meta", "assets", "pair", "coverage", "charts", "comparison", "validation", "ohlc"} and len(body["report"]["charts"]) == 3 and len(body["report"]["coverage"]) == 17
+    assert set(body["report"]) == {"meta", "assets", "pair", "coverage", "charts", "comparison", "validation", "ohlc", "intelligence"} and len(body["report"]["charts"]) == 3 and len(body["report"]["coverage"]) == 17
     text = open(os.path.join(out, "send_success_report.json"), encoding="utf-8").read(); assert len(json.dumps(body)) + 400 < 19000, len(json.dumps(body)); assert "NaN" not in text and "Infinity" not in text
 
 @R.register("report build-payload: the generation time stamp is the real UTC time in the report's own format (replaceable in tests)")
@@ -946,7 +946,7 @@ def _():
 def _():
     model = ReportModel()
     with served(model) as server:
-        out = verified_dir(server); model.self_check_reply = self_reply(report_ohlc_supported=True)       # an updated web app: the whole stored report goes out, ohlc included
+        out = verified_dir(server); model.self_check_reply = self_reply(report_ohlc_supported=True, report_intelligence_supported=True)       # an updated web app: the whole stored report goes out, ohlc included
         summary = os.path.join(new_temp_dir(), "summary.md"); code, stdout, stderr = post_report(server, out, summary=summary); assert code == 0, (stdout, stderr)
         assert len(model.requests) == 1 and set(model.requests[0]) == REPORT_KEYS, set(model.requests[0]) ^ REPORT_KEYS
         sent, stored = model.requests[0], read_json(out, "send_success_report.json")

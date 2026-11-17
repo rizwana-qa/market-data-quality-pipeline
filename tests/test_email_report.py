@@ -362,4 +362,90 @@ def _():
     assert len(body) <= er.MAX_REPORT_CHARS, (len(body), er.MAX_REPORT_CHARS)
 
 
+# ================================================================ the market intelligence part (deterministic Python; the web app only shows it)
+def intel_dataset(mutate=None):
+    """A copy of the validated dataset, optionally changed, for the insufficient-data cases."""
+    import copy
+    data = copy.deepcopy(outputs()["dataset"])
+    if mutate: mutate(data)
+    return data
+
+@R.register("intelligence: the correlation is the Pearson correlation of the aligned daily PERCENTAGE RETURNS of the last 30 returns (independent Decimal calculation), not of price levels; window and observation count are stated")
+def _():
+    dataset = outputs()["dataset"]; closes = {a: dataset["closes"][a][-31:] for a in ("BTC", "ETH")}
+    rho = ic.correlation(ic.returns(closes["BTC"]), ic.returns(closes["ETH"])); levels = ic.correlation([ic.dec(v) for v in closes["BTC"]], [ic.dec(v) for v in closes["ETH"]])
+    figures = er.intelligence_figures(dataset); assert abs(Decimal(repr(figures["correlation"])) - rho) < Decimal("1e-12") and abs(rho - levels) > Decimal("0.001"), (rho, levels)
+    part = report()["intelligence"]; rows = dict(part["correlation"]["rows"]); text = part["correlation"]["text"]
+    assert rows["Valid observations"] == "30 of 30" and rows["Pearson correlation of returns"] == f"{float(rho):.2f}" and rows["Window"] == f"30 daily returns, {dataset['dates'][-30]} to {dataset['dates'][-1]}", rows
+    assert "not price levels" in text and "not causation" in text and f"Pearson {float(rho):.2f}" in text and ("strong positive" in text or "co-movement" in text), text
+    assert "cause" not in text.replace("not causation", "")
+
+@R.register("intelligence: relative strength compares the 30-, 14- and 7-return performance of the two assets, names the stronger one and says that momentum is not assumed to continue")
+def _():
+    dataset = outputs()["dataset"]; part = report()["intelligence"]["relative_strength"]; f = er.intelligence_figures(dataset)
+    c = {a: dataset["closes"][a] for a in ("BTC", "ETH")}; r30 = {a: ic.cumulative(c[a][-31:]) for a in c}; stronger = "BTC" if r30["BTC"] > r30["ETH"] else "ETH"
+    assert f["stronger"] == stronger or f["stronger"] == "equal" and abs(r30["BTC"] - r30["ETH"]) < Decimal("0.00005"), (f["stronger"], r30)
+    rows = dict(part["rows"]); assert rows["Relatively stronger"] == stronger and f"BTC {float(r30['BTC']) * 100:+.2f}%" in rows["Performance, 30 returns"] and f"ETH {float(r30['ETH']) * 100:+.2f}%" in rows["Performance, 30 returns"], rows
+    for k, label in ((14, "Performance, 14 returns"), (7, "Performance, 7 returns")): assert f"BTC {float(ic.cumulative(c['BTC'][-(k + 1):])) * 100:+.2f}%" in rows[label], label
+    assert f"{stronger} was the relatively stronger asset" in part["text"] and "does not imply that it will continue" in part["text"] and "7-return momentum" in part["text"], part["text"]
+
+@R.register("intelligence: volatility is the annualised sample standard deviation of the daily returns, the maximum drawdown the largest fall from a previous high within the window (independent calculation); the method and period are stated")
+def _():
+    dataset = outputs()["dataset"]; part = report()["intelligence"]["risk"]; rows = dict(part["rows"]); f = er.intelligence_figures(dataset)
+    for asset in ("BTC", "ETH"):
+        c = dataset["closes"][asset][-31:]; vol = ic.sample_std(ic.returns(c)) * Decimal(365).sqrt(); dd = ic.max_drawdown(c)
+        assert abs(Decimal(repr(f["assets"][asset]["annual_vol"])) - vol) < Decimal("1e-12") and abs(Decimal(repr(f["assets"][asset]["max_dd"][0])) - dd) < Decimal("1e-12"), asset
+        assert f"{asset} {float(vol) * 100:.2f}%" in rows["Realised volatility, annualised"] and f"{asset} {float(dd) * 100:.2f}%" in rows["Maximum drawdown"], (asset, rows)
+    assert "Method: sample standard deviation of 30 daily returns" in part["text"] and dataset["dates"][-30] in part["text"] and "largest fall of the daily close" in part["text"]
+    assert ("materially higher" in part["text"] or "similar" in part["text"]) and ("materially deeper" in part["text"] or "similar" in part["text"] or "Neither asset fell" in part["text"]), part["text"]
+
+@R.register("intelligence: three labelled scenarios (Bullish, Neutral, Bearish), each with evidence, supporting conditions and weakening conditions built from measured figures; no target price, prediction, news or cause is invented; history and scenarios are kept apart")
+def _():
+    part = report()["intelligence"]; assert [s["name"] for s in part["scenarios"]] == ["Bullish", "Neutral", "Bearish"]
+    dataset = outputs()["dataset"]; known = {f"${v:,.2f}" for a in ("BTC", "ETH") for v in dataset["closes"][a][-31:]}
+    for s in part["scenarios"]:
+        assert set(s) == {"name", "evidence", "supports", "weakens"} and all(s[k] for k in ("evidence", "supports", "weakens")), s
+        text = " ".join(s[k] for k in ("evidence", "supports", "weakens"))
+        assert not re.search(r"\b(target|forecast|will rise|will fall|predict|expected to|should buy|should sell|recommend|because|due to|news)\b", text, re.I), text
+        for money in re.findall(r"\$[\d,]+\.\d\d", text): assert money in known, ("a price that is not a close of the window", money)
+    assert "not price predictions" in part["disclaimer"] and "investment recommendations" in part["disclaimer"] and "measured from the validated Kraken dataset" in part["disclaimer"]
+    inter = part["interpretation"]; assert set(inter) == {"divergence", "risk_signal", "monitor"} and inter["monitor"].startswith("Monitor"), inter
+
+@R.register("intelligence: an input that cannot support a calculation is reported as unavailable - too few closes, a constant series (undefined correlation), a missing value - never a zero and never a made-up number; the part stays valid")
+def _():
+    few = intel_dataset(lambda d: [d.update(rows=d["rows"][-20:], dates=d["dates"][-20:]), d["closes"].update({a: d["closes"][a][-20:] for a in d["closes"]}), d["returns"].update({a: d["returns"][a][-20:] for a in d["returns"]})])
+    assert er.intelligence_figures(few) is None; part = er.intelligence_of(few); er._check_intelligence(part)
+    assert part["correlation"]["rows"] == [] and part["correlation"]["text"].startswith("Unavailable") and all(s["evidence"].startswith("Unavailable") for s in part["scenarios"]) and part["interpretation"]["monitor"].startswith("Unavailable")
+    def flat(d): d["returns"]["BTC"] = d["returns"]["BTC"][:-30] + [0.0] * 30; d["closes"]["BTC"] = d["closes"]["BTC"][:-31] + [100.0] * 31
+    const = er.intelligence_of(intel_dataset(flat)); er._check_intelligence(const)
+    assert dict(const["correlation"]["rows"])["Pearson correlation of returns"] == "Unavailable" and const["correlation"]["text"].startswith("Unavailable: a return series is constant") and "nan" not in json.dumps(const).lower()
+    def hole(d): d["returns"]["ETH"][-5] = None
+    assert er.intelligence_figures(intel_dataset(hole)) is None and er.intelligence_of(intel_dataset(hole))["risk"]["text"].startswith("Unavailable")
+    def nan(d): d["closes"]["BTC"][-3] = float("nan")
+    assert er.intelligence_figures(intel_dataset(nan)) is None
+
+@R.register("intelligence: deterministic and wired in - the same dataset always gives the same part, build_report carries it, check_report accepts it and refuses markup, an unknown key, a wrong scenario list and an oversized text; the request still fits the web app's budget")
+def _():
+    dataset = outputs()["dataset"]; assert er.intelligence_of(dataset) == er.intelligence_of(dataset) == report()["intelligence"]
+    base = report(); er.check_report(base)
+    import copy
+    def refused(mutate):
+        broken = copy.deepcopy(base); mutate(broken["intelligence"])
+        try: er.check_report(broken)
+        except er.EmailReportError: return True
+        return False
+    for name, mutate in {"markup": lambda i: i["risk"].update(text="<b>x</b>"), "unknown key": lambda i: i.update(extra=1), "scenarios": lambda i: i["scenarios"].reverse(), "long text": lambda i: i["risk"].update(text="x" * 700),
+                         "rows": lambda i: i["risk"].update(rows=[["a", "b"]] * 6), "cell": lambda i: i["risk"].update(rows=[["a", 5]])}.items(): assert refused(mutate), name
+    assert len(json.dumps(base, separators=(",", ":"))) <= er.MAX_REPORT_CHARS
+
+@R.register("intelligence: the client sends the part only to a web app that reports report_intelligence_supported true; for any other web app the part is removed and the rest of the request is unchanged")
+def _():
+    payload = {"report": dict(report())}; assert "intelligence" in payload["report"]
+    kept = da.without_unsupported_parts(payload, {da.OHLC_CAPABILITY_FLAG: True, da.INTELLIGENCE_CAPABILITY_FLAG: True}); assert kept is payload or kept == payload
+    for flags in ({}, {da.OHLC_CAPABILITY_FLAG: True}, {da.OHLC_CAPABILITY_FLAG: True, da.INTELLIGENCE_CAPABILITY_FLAG: "true"}):
+        out = da.without_unsupported_parts({"report": dict(report())}, flags); assert "intelligence" not in out["report"] and ("ohlc" in out["report"]) == (flags.get(da.OHLC_CAPABILITY_FLAG) is True), flags
+        assert {k: v for k, v in out["report"].items() if k not in ("ohlc", "intelligence")} == {k: v for k, v in report().items() if k not in ("ohlc", "intelligence")}
+    assert da.INTELLIGENCE_CAPABILITY_FLAG == "report_intelligence_supported" and da.INTELLIGENCE_CAPABILITY_FLAG in da.REPORT_OPTIONAL_PARTS | {da.INTELLIGENCE_CAPABILITY_FLAG} and "intelligence" in da.REPORT_OPTIONAL_PARTS
+
+
 R.finish()

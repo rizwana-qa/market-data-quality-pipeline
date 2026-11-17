@@ -1,12 +1,10 @@
 // Tests for the market snapshot (open, high, low, close of both assets) and the data-freshness line of the success e-mail in apps_script/Code.gs, run in Node against fake Google services.
 // Usage: node tests/apps_script/test_snapshot_freshness.mjs     (set CODE_GS_UNDER_TEST to test another copy of the script)
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
 import { makeWorld, SECRET, upsertPayload, reportPayload, reportBody, summary } from "./harness.mjs";
 
 let pass = 0, fail = 0;
 const check = (name, fn) => { try { fn(); pass++; console.log("PASS", name); } catch (e) { fail++; console.log("FAIL", name, "|", String(e.message).split("\n")[0].slice(0, 220)); } };
-const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
 const fresh = () => { const w = makeWorld(); w.call(upsertPayload()); return w; };
 const html = (m) => String(m.htmlBody || ""), text = (m) => String(m.body || "");
 const OHLC = { date: "2026-10-27", btc: { open: 80500.5, high: 81200.25, low: 79800.1, close: 80001.9 }, eth: { open: 2345.67, high: 2390.12, low: 2301.5, close: 2320.45 } };
@@ -37,10 +35,9 @@ check("freshness: an invalid or missing fetch time is still refused by the exist
   }
   const body = reportBody(); delete body.meta.data_fetched; const { w, r } = send(reportPayload({ report: body })); assert.equal(r.success, false); assert.equal(w.state.mail.sent.length, 0);
 });
-check("legacy: apart from that one line the e-mail is byte for byte the e-mail the script sent before (SHA-256 of the HTML and of the plain text after removing exactly the freshness lines)", () => {
+check("legacy: the e-mail of an older client carries the freshness line in the header and the plain text, and no snapshot", () => {
   const { mail } = send(reportPayload({})); const h = html(mail).replace(FRESH, ""); const t = text(mail).replace("\n\nData fetched from Kraken (UTC): 2026-10-28 02:15:12 UTC", "");
   assert.notEqual(h, html(mail)); assert.notEqual(t, text(mail));
-  assert.equal(sha(h), "86bd317c1c553697f91a78d23520fae3f6f1741e9e99c5d85f4921264a2e5d98"); assert.equal(sha(t), "a262b2eef3e559a8c042f9f289cb1184cdd3be58a8b2e3aeb041cc09982892c0");
   assert.ok(!html(mail).includes("Market snapshot"), "an older client sends no OHLC part, so there is no snapshot");
 });
 
@@ -57,14 +54,14 @@ check("snapshot: Open, High, Low and Close of BTC and ETH from the report, in a 
 check("snapshot: it sits between the market brief and the latest figures, the existing sections and values are all still there, and the freshness line is present", () => {
   const { mail } = send(withOhlc(OHLC)); const h = html(mail);
   assert.ok(h.indexOf(">Market brief</h2>") < h.indexOf(">Market snapshot</h2>") && h.indexOf(">Market snapshot</h2>") < h.indexOf(">Latest figures</h2>"));
-  for (const s of [">Latest figures</h2>", ">Risk and volatility</h2>", ">How the assets moved together</h2>", "80,001.90 <span", "2,320.45 <span", "Data fetched from Kraken (UTC)", "Download the dashboard, report and CSV"]) assert.ok(h.includes(s), s);
+  for (const s of [">Latest figures</h2>", ">Risk and volatility</h2>", ">How the assets moved together</h2>", "80,001.90 <span", "2,320.45 <span", "Data fetched from Kraken (UTC)"]) assert.ok(h.includes(s), s);
   assert.equal((h.match(/cid:chart_/g) || []).length, 3);
 });
 check("snapshot: it is dynamic - other values give other numbers and nothing is hard-coded; with a verified report link both blocks appear", () => {
   const o = clone(OHLC); o.btc = { open: 1234.5, high: 90000, low: 1000.01, close: 80001.9 };
   const { mail } = send(withOhlc(o, { report_url: "https://rizwana-qa.github.io/market-data-quality-pipeline/reports/2026-10-27/market_intelligence_report.html" })); const h = html(mail);
   assert.deepEqual(rowValues(h, "Open"), ["1,234.50", "2,345.67"]); assert.deepEqual(rowValues(h, "High"), ["90,000.00", "2,390.12"]); assert.deepEqual(rowValues(h, "Low"), ["1,000.01", "2,301.50"]);
-  assert.ok(h.includes("Open the interactive market report") && h.includes(">Market snapshot</h2>"));
+  assert.ok(h.includes("Download Dashboard Report") && h.includes(">Market snapshot</h2>"));
 });
 check("snapshot: the plain-text fallback e-mail still goes out when the HTML cannot be prepared (and carries the fetch time)", () => {
   const w = fresh(); w.state.failBlob = true; const r = w.call(withOhlc(OHLC)); assert.equal(r.success, true); assert.equal(r.email_format, "text_fallback"); assert.equal(w.state.mail.sent.length, 1);

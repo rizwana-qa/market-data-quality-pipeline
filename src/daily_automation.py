@@ -117,7 +117,7 @@ PAGES_REQUEST_TIMEOUT = 15
 MAX_PAGES_REPORT_BYTES = 16 * 1024 * 1024                          # the report embeds Plotly.js (about 4.9 MB), like the dashboard
 MAX_INTERACTIVE_REPORT_BYTES = 16 * 1024 * 1024                   # the final report embeds Plotly.js (about 4.9 MB); the earlier v4 report was about 58 KB
 REPORT_PARTS = {"meta", "assets", "pair", "coverage", "charts"}
-REPORT_OPTIONAL_PARTS = {"comparison", "validation", "ohlc"}               # sent by this client; an older client sends neither, and the web app accepts both shapes
+REPORT_OPTIONAL_PARTS = {"comparison", "validation", "ohlc", "intelligence"}              # sent by this client; an older client sends neither, and the web app accepts both shapes
 REPORT_CHART_IDS = ["indexed", "returns", "drawdown"]
 MAX_CHART_BYTES = 6000
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -484,7 +484,8 @@ def _post_once(url, body):
 
 CAPABILITY_FLAG = "report_evidence_supported"       # set by an updated Code.gs in its self_check reply; an older deployed script does not send it
 OHLC_CAPABILITY_FLAG = "report_ohlc_supported"       # set only by a Code.gs that accepts the optional 'ohlc' part of the report; the part is removed from the request for any other web app
-LINK_CAPABILITY_FLAG = "report_link_supported"      # a separate flag: set only by a Code.gs that accepts report_url / report_link_status; it never replaces the evidence flag above
+INTELLIGENCE_CAPABILITY_FLAG = "report_intelligence_supported"      # set only by a Code.gs that accepts the optional 'intelligence' part (the market intelligence section); the part is removed for any other web app
+LINK_CAPABILITY_FLAG = "report_link_supported"     # a separate flag: set only by a Code.gs that accepts report_url / report_link_status; it never replaces the evidence flag above
 
 
 def preflight_web_app(url, token):
@@ -522,7 +523,11 @@ def without_unsupported_parts(payload, flags):
     report = payload.get("report")
     if isinstance(report, dict) and "ohlc" in report and flags.get(OHLC_CAPABILITY_FLAG) is not True:
         print("NOTICE: the deployed Apps Script does not report report_ohlc_supported: true, so the success report is sent without the OHLC snapshot", file=sys.stderr)
-        return dict(payload, report={name: part for name, part in report.items() if name != "ohlc"})
+        payload = dict(payload, report={name: part for name, part in report.items() if name != "ohlc"})
+        report = payload["report"]
+    if isinstance(report, dict) and "intelligence" in report and flags.get(INTELLIGENCE_CAPABILITY_FLAG) is not True:
+        print("NOTICE: the deployed Apps Script does not report report_intelligence_supported: true, so the success report is sent without the market intelligence section", file=sys.stderr)
+        payload = dict(payload, report={name: part for name, part in report.items() if name != "intelligence"})
     return payload
 
 
@@ -1052,7 +1057,7 @@ def command_notify_failure(args, env, today):
 def clean_self_check(reply, attempts):
     """The self-check reply keeps only booleans and the six property flags; anything else the web app sends is dropped."""
     kept = {}
-    for name in ("success", *SELF_CHECK_FLAGS, CAPABILITY_FLAG, LINK_CAPABILITY_FLAG, OHLC_CAPABILITY_FLAG):
+    for name in ("success", *SELF_CHECK_FLAGS, CAPABILITY_FLAG, LINK_CAPABILITY_FLAG, OHLC_CAPABILITY_FLAG, INTELLIGENCE_CAPABILITY_FLAG):
         if isinstance(reply.get(name), bool):
             kept[name] = reply[name]
     properties = reply.get("properties")
